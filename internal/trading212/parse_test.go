@@ -93,6 +93,27 @@ func TestParsePositions(t *testing.T) {
 	if want := time.Date(2024, 3, 11, 9, 30, 0, 0, time.UTC); !aapl.Opened.Equal(want) {
 		t.Errorf("Opened = %v, want %v", aapl.Opened, want)
 	}
+
+	// VUSA_EQ is the same-currency fixture with a non-zero quantityInPies;
+	// assert the full field set so that edge case is actually covered, not
+	// just documented by the fixture.
+	vusa := ps[1]
+	if vusa.Ticker != "VUSA_EQ" || vusa.Name != "Vanguard S&P 500 UCITS ETF" || vusa.ISIN != "IE00B3XXRP09" {
+		t.Errorf("instrument identity not mapped: %+v", vusa)
+	}
+	if vusa.Quantity != 100 || vusa.QuantityInPies != 10 {
+		t.Errorf("quantities not mapped: %+v", vusa)
+	}
+	if vusa.AvgPrice != 75.10 || vusa.CurrentPrice != 82.30 {
+		t.Errorf("prices not mapped: %+v", vusa)
+	}
+	if vusa.Value != 8230.00 || vusa.Cost != 7510.00 ||
+		vusa.UnrealizedPL != 720.00 || vusa.FXImpact != 0 {
+		t.Errorf("wallet impact not mapped: %+v", vusa)
+	}
+	if want := time.Date(2023, 1, 5, 14, 0, 0, 0, time.UTC); !vusa.Opened.Equal(want) {
+		t.Errorf("Opened = %v, want %v", vusa.Opened, want)
+	}
 }
 
 // The rule most easily broken: prices are in the instrument's currency, wallet
@@ -173,5 +194,39 @@ func TestParsePositionsEmptyArray(t *testing.T) {
 	}
 	if len(ps) != 0 {
 		t.Errorf("got %d positions, want 0", len(ps))
+	}
+}
+
+// A position object that omits walletImpact entirely is not something the
+// live API is expected to send, but the parser must not panic on it. Go
+// zero-values the nested struct, so this pins the resulting behaviour: the
+// account-currency argument is used as the fallback, every wallet-impact
+// figure comes back zero, and ReturnPct is nil because cost is zero.
+//
+// Note this zero-valued result is indistinguishable from a genuine zero-cost
+// holding like FREE_EQ in testdata/positions.json — the parser cannot tell
+// "walletImpact was omitted" from "walletImpact was present with all zeros",
+// and that is an accepted limitation, not a gap to close here.
+func TestParsePositionsMissingWalletImpact(t *testing.T) {
+	body := []byte(`[{"instrument":{"ticker":"X_EQ","currency":"USD"},"quantity":5}]`)
+	ps, err := parsePositions(body, "GBP")
+	if err != nil {
+		t.Fatalf("parsePositions: %v", err)
+	}
+	if len(ps) != 1 {
+		t.Fatalf("got %d positions, want 1", len(ps))
+	}
+	p := ps[0]
+	if p.AccountCurrency != "GBP" {
+		t.Errorf("AccountCurrency = %q, want the GBP fallback", p.AccountCurrency)
+	}
+	if p.Value != 0 || p.Cost != 0 || p.UnrealizedPL != 0 || p.FXImpact != 0 {
+		t.Errorf("wallet impact figures = %+v, want all zero", p)
+	}
+	if p.ReturnPct != nil {
+		t.Errorf("ReturnPct = %v, want nil for a zero cost basis", *p.ReturnPct)
+	}
+	if !p.Opened.IsZero() {
+		t.Errorf("Opened = %v, want the zero time for an omitted createdAt", p.Opened)
 	}
 }
