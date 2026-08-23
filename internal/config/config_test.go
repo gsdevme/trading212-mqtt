@@ -186,6 +186,22 @@ func TestErrorsAreCollected(t *testing.T) {
 	}
 }
 
+func TestWhitelistIsParsed(t *testing.T) {
+	env := baseEnv()
+	env["TICKERS"] = "AAPL_US_EQ,VUSA_EQ"
+	setEnv(t, env)
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !c.Whitelist.Includes("aapl_us_eq") {
+		t.Error("whitelist should include AAPL_US_EQ case-insensitively")
+	}
+	if c.Whitelist.All {
+		t.Error("an explicit list must not set All")
+	}
+}
+
 func TestStringRedactsSecrets(t *testing.T) {
 	env := baseEnv()
 	env["MQTT_PASSWORD"] = "hunter2"

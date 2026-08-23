@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gsdevme/trading212-mqtt/internal/trading212"
 )
 
 // MinPollInterval is the floor for POLL_INTERVAL. Rate limits are enforced per
@@ -37,7 +39,8 @@ type Config struct {
 	APISecret  string
 
 	// Positions
-	Tickers string // raw TICKERS value; parsed into a Whitelist by the caller
+	Tickers   string               // raw TICKERS value, kept for logging
+	Whitelist trading212.Whitelist // parsed form used by the publisher
 
 	// Polling
 	PollInterval          time.Duration
@@ -76,6 +79,7 @@ func Load() (*Config, error) {
 		LogLevel:        strings.ToLower(getEnv("LOG_LEVEL", "info")),
 		LogFormat:       strings.ToLower(getEnv("LOG_FORMAT", "json")),
 	}
+	c.Whitelist = trading212.ParseWhitelist(c.Tickers)
 
 	var errs []error
 
