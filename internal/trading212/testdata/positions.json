@@ -1,0 +1,65 @@
+[
+  {
+    "instrument": {
+      "ticker": "AAPL_US_EQ",
+      "name": "Apple Inc.",
+      "isin": "US0378331005",
+      "currency": "USD"
+    },
+    "quantity": 12.5,
+    "quantityAvailableForTrading": 12.5,
+    "quantityInPies": 0,
+    "averagePricePaid": 180.25,
+    "currentPrice": 212.40,
+    "createdAt": "2024-03-11T09:30:00Z",
+    "walletImpact": {
+      "currency": "GBP",
+      "currentValue": 2100.50,
+      "totalCost": 1800.00,
+      "unrealizedProfitLoss": 300.50,
+      "fxImpact": -45.20
+    }
+  },
+  {
+    "instrument": {
+      "ticker": "VUSA_EQ",
+      "name": "Vanguard S&P 500 UCITS ETF",
+      "isin": "IE00B3XXRP09",
+      "currency": "GBP"
+    },
+    "quantity": 100,
+    "quantityAvailableForTrading": 90,
+    "quantityInPies": 10,
+    "averagePricePaid": 75.10,
+    "currentPrice": 82.30,
+    "createdAt": "2023-01-05T14:00:00Z",
+    "walletImpact": {
+      "currency": "GBP",
+      "currentValue": 8230.00,
+      "totalCost": 7510.00,
+      "unrealizedProfitLoss": 720.00,
+      "fxImpact": 0
+    }
+  },
+  {
+    "instrument": {
+      "ticker": "FREE_EQ",
+      "name": "Free Share Ltd",
+      "isin": "GB00FREE0001",
+      "currency": "GBP"
+    },
+    "quantity": 1,
+    "quantityAvailableForTrading": 1,
+    "quantityInPies": 0,
+    "averagePricePaid": 0,
+    "currentPrice": 3.40,
+    "createdAt": "2025-06-01T08:00:00Z",
+    "walletImpact": {
+      "currency": "GBP",
+      "currentValue": 3.40,
+      "totalCost": 0,
+      "unrealizedProfitLoss": 3.40,
+      "fxImpact": 0
+    }
+  }
+]
