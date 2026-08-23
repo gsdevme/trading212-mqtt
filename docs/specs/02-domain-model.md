@@ -12,7 +12,7 @@ the wire response is marshalled straight back out onto the state topic, so entit
 
 | Go field | JSON tag | Type | Source |
 |---|---|---|---|
-| `ID` | `id` | `int64` | `summary.id` |
+| `ID` | `-` | `int64` | `summary.id` |
 | `Currency` | `currency` | `string` | `summary.currency` |
 | `TotalValue` | `total_value` | `float64` | `summary.totalValue` |
 | `FreeCash` | `free_cash` | `float64` | `summary.cash.availableToTrade` |
@@ -22,24 +22,35 @@ the wire response is marshalled straight back out onto the state topic, so entit
 | `CurrentValue` | `current_value` | `float64` | `summary.investments.currentValue` |
 | `UnrealizedPL` | `unrealized_pl` | `float64` | `summary.investments.unrealizedProfitLoss` |
 | `RealizedPL` | `realized_pl` | `float64` | `summary.investments.realizedProfitLoss` |
-| `ReturnPct` | `return_pct,omitempty` | `*float64` | derived |
+| `ReturnPct` | `return_pct` | `*float64` | derived |
 | `LastUpdated` | `last_updated` | `time.Time` | poll completion time |
 
 This covers `id`, `currency`, the total value, the three cash figures, the four
 investment figures, the derived `ReturnPct` and `LastUpdated` (`REQ-DM-01`).
+
+`ID` is tagged `json:"-"`, not `json:"id"`: the account number identifies the
+device and appears in MQTT topics, but it must never appear in the published
+state document itself. This mirrors the `Whitelist` casing rule below — a
+deliberate decision recorded here so it is not "corrected" back to `json:"id"`
+later.
+
+`ReturnPct` has no `omitempty`. A nil pointer with `omitempty` drops the key
+entirely, which is worse for Home Assistant than a present key with an
+explicit JSON `null` — a missing key leaves a `value_json.return_pct` template
+with nothing to read, while `null` renders the entity cleanly as `unknown`,
+which is exactly what a zero cost basis means. The key is always present; its
+value is `null` only when it cannot be computed.
 
 ## `Position`
 
 | Go field | JSON tag | Type | Source |
 |---|---|---|---|
 | `Ticker` | `ticker` | `string` | `instrument.ticker` |
-| `Slug` | `slug` | `string` | derived from `Ticker` |
 | `Name` | `name` | `string` | `instrument.name` |
 | `ISIN` | `isin` | `string` | `instrument.isin` |
 | `InstrumentCurrency` | `instrument_currency` | `string` | `instrument.currency` |
 | `AccountCurrency` | `account_currency` | `string` | `walletImpact.currency` |
 | `Quantity` | `quantity` | `float64` | `quantity` |
-| `QuantityAvailable` | `quantity_available` | `float64` | `quantityAvailableForTrading` |
 | `QuantityInPies` | `quantity_in_pies` | `float64` | `quantityInPies` |
 | `AvgPrice` | `avg_price` | `float64` | `averagePricePaid` (instrument currency) |
 | `CurrentPrice` | `current_price` | `float64` | `currentPrice` (instrument currency) |
@@ -47,14 +58,22 @@ investment figures, the derived `ReturnPct` and `LastUpdated` (`REQ-DM-01`).
 | `Cost` | `cost` | `float64` | `walletImpact.totalCost` (account currency) |
 | `UnrealizedPL` | `unrealized_pl` | `float64` | `walletImpact.unrealizedProfitLoss` (account currency) |
 | `FXImpact` | `fx_impact` | `float64` | `walletImpact.fxImpact` (account currency) |
-| `ReturnPct` | `return_pct,omitempty` | `*float64` | derived |
+| `ReturnPct` | `return_pct` | `*float64` | derived |
 | `Opened` | `opened` | `time.Time` | `createdAt` |
 
-This covers instrument identity (`Ticker`, `Slug`, `Name`, `ISIN`), both currencies
+The wire response also carries `quantityAvailableForTrading`, but it is
+deliberately not mapped onto `Position`: the domain model carries only fields
+that are published or that derive something published, and no entity in the
+approved design consumes `quantityAvailableForTrading`. Its absence here is a
+decision, not an oversight.
+
+This covers instrument identity (`Ticker`, `Name`, `ISIN`), both currencies
 (`InstrumentCurrency`, `AccountCurrency`), quantities (`Quantity`,
-`QuantityAvailable`, `QuantityInPies`), both prices (`AvgPrice`, `CurrentPrice`), the
+`QuantityInPies`), both prices (`AvgPrice`, `CurrentPrice`), the
 four wallet-impact figures (`Value`, `Cost`, `UnrealizedPL`, `FXImpact`), and the
-derived `ReturnPct` and `Opened` (`REQ-DM-02`).
+derived `ReturnPct` and `Opened` (`REQ-DM-02`). `Slug` is not a stored field — it
+is a package function, `Slug(ticker string) string`, applied where a topic
+segment or HA `object_id` is needed rather than carried on `Position` itself.
 
 Price fields (`AvgPrice`, `CurrentPrice`) are denominated in `InstrumentCurrency`;
 wallet-impact fields (`Value`, `Cost`, `UnrealizedPL`, `FXImpact`) are denominated in

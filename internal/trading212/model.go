@@ -43,7 +43,7 @@ type AccountSummary struct {
 // Position is one open holding, published to that ticker's own state topic.
 //
 // Two currencies are in play: AvgPrice and CurrentPrice are denominated in
-// InstrumentCurrency, while Value, Cost, UnrealizedPL and FxImpact are
+// InstrumentCurrency, while Value, Cost, UnrealizedPL and FXImpact are
 // denominated in AccountCurrency. See docs/specs/01-trading212-api.md.
 type Position struct {
 	Ticker string `json:"ticker"`
@@ -64,7 +64,7 @@ type Position struct {
 	Value        float64 `json:"value"`
 	Cost         float64 `json:"cost"`
 	UnrealizedPL float64 `json:"unrealized_pl"`
-	FxImpact     float64 `json:"fx_impact"`
+	FXImpact     float64 `json:"fx_impact"`
 
 	// ReturnPct is nil when Cost is zero.
 	ReturnPct *float64 `json:"return_pct"`
@@ -74,8 +74,8 @@ type Position struct {
 
 // Snapshot is the result of one poll: the two API responses, already parsed.
 type Snapshot struct {
-	Account   AccountSummary
-	Positions []Position
+	Account   AccountSummary `json:"account"`
+	Positions []Position     `json:"positions"`
 }
 
 // Held reports the position for a ticker if the account currently holds it.
@@ -163,7 +163,9 @@ func (w Whitelist) Static() []string {
 
 // Slug normalises a ticker for use in MQTT topics and Home Assistant object ids,
 // both of which restrict the character set. Everything outside [a-z0-9_] becomes
-// an underscore, so "BRK.B_US_EQ" becomes "brk_b_us_eq".
+// an underscore, so "BRK.B_US_EQ" becomes "brk_b_us_eq". Slug("") returns "";
+// callers are expected never to pass an empty ticker, since real tickers are
+// never empty.
 func Slug(ticker string) string {
 	var b strings.Builder
 	b.Grow(len(ticker))
