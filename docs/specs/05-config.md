@@ -13,15 +13,15 @@ with no credentials at all.
 | `T212_API_KEY` | — | Required in `live`/`demo` |
 | `T212_API_SECRET` | — | Basic-auth password; empty selects the legacy header scheme |
 | `TICKERS` | empty | Position whitelist (see below) |
-| `POLL_INTERVAL` | `5m` | Interval between polls; floored at `1m`; first poll runs immediately |
-| `POLL_MAX_RETRIES` | `3` | Retries per poll on transient failure; must be `>= 0` |
+| `POLL_INTERVAL` | `5m` | Interval between polls; values below `1m` are rejected; first poll runs immediately |
+| `POLL_MAX_RETRIES` | `3` | Retries per poll on transient failure; must be a valid integer `>= 0` |
 | `MQTT_BROKER_URL` | — | Required in every mode |
 | `MQTT_USERNAME` / `MQTT_PASSWORD` | empty | Broker credentials |
 | `MQTT_CLIENT_ID` | `trading212-mqtt` | MQTT client identifier |
 | `TOPIC_PREFIX` | `trading212` | Root of all state topics |
 | `DISCOVERY_PREFIX` | `homeassistant` | HA discovery prefix |
 | `HTTP_ADDR` | `:8080` | Status page and probe listener |
-| `READY_FAILURE_THRESHOLD` | `3` | Consecutive poll failures before `/readyz` goes unready; minimum `1` |
+| `READY_FAILURE_THRESHOLD` | `3` | Consecutive poll failures before `/readyz` goes unready; a valid integer, minimum `1` |
 | `LOG_LEVEL` | `info` | `log/slog` level |
 | `LOG_FORMAT` | `json` | `log/slog` output format — `json` or `text` |
 
@@ -44,7 +44,9 @@ the pipeline runs with nothing configured beyond a broker URL (`REQ-CF-01`,
 `REQ-CF-02`).
 
 `MQTT_BROKER_URL` is required in every mode, including `mock`, and must parse as a
-valid broker URL (`REQ-CF-03`).
+valid URL with a non-empty scheme, e.g. `mqtt://host:1883` (`REQ-CF-03`). autopaho
+needs a scheme regardless, so this rejects at startup what would otherwise fail
+later at connect time.
 
 ## `TICKERS` semantics
 
@@ -64,9 +66,11 @@ see `02-domain-model.md` for `Whitelist`'s casing rules).
 
 ## `POLL_INTERVAL` floor
 
-`POLL_INTERVAL` defaults to `5m` and is floored at `1m`: any configured value below
-one minute is raised to one minute rather than honoured as configured (`REQ-CF-04`).
-This floor exists because Trading 212's rate limits are enforced **per account**, not
+`POLL_INTERVAL` defaults to `5m` and has a `1m` floor: any configured value below
+one minute is rejected with a validation error, not silently raised to the floor
+(`REQ-CF-04`). Clamping would hide an operator's mistake; rejecting it means
+whoever typed `30s` finds out at startup, not by wondering why the account looks
+throttled. This floor exists because Trading 212's rate limits are enforced **per account**, not
 per key or per process — an over-eager `POLL_INTERVAL` doesn't just risk throttling
 this service, it throttles every other tool sharing the same account's credentials,
 including the human using the Trading 212 apps. A one-minute floor keeps the service
@@ -83,7 +87,10 @@ make `/readyz` unready on the very first transient failure with no tolerance at 
 Every configuration error found is collected via `errors.Join` rather than
 short-circuiting on the first one, so a misconfigured deployment reports everything
 wrong with it in one failed startup instead of one error per redeploy attempt
-(`REQ-CF-07`).
+(`REQ-CF-07`). This includes malformed input, not just missing or out-of-range
+values: an unparseable `POLL_MAX_RETRIES` or `READY_FAILURE_THRESHOLD` (e.g.
+`not-a-number`) is reported by name rather than silently falling back to its
+default.
 
 ## Redaction
 

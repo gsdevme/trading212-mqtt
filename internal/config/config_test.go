@@ -102,6 +102,16 @@ func TestBrokerURLRequired(t *testing.T) {
 	}
 }
 
+func TestBrokerURLRequiresScheme(t *testing.T) {
+	env := baseEnv()
+	env["MQTT_BROKER_URL"] = "just-text"
+	setEnv(t, env)
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "MQTT_BROKER_URL") {
+		t.Fatalf("error = %v, want it to mention MQTT_BROKER_URL", err)
+	}
+}
+
 func TestInvalidModeIsRejected(t *testing.T) {
 	env := baseEnv()
 	env["MODE"] = "staging"
@@ -127,6 +137,40 @@ func TestPollIntervalDefaultAndFloor(t *testing.T) {
 	setEnv(t, env)
 	if _, err := Load(); err == nil {
 		t.Fatal("expected 30s to be rejected by the 1m floor")
+	}
+}
+
+func TestPollMaxRetriesRejectsNegative(t *testing.T) {
+	env := baseEnv()
+	env["POLL_MAX_RETRIES"] = "-1"
+	setEnv(t, env)
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "POLL_MAX_RETRIES") {
+		t.Fatalf("error = %v, want it to mention POLL_MAX_RETRIES", err)
+	}
+}
+
+func TestReadyFailureThresholdRejectsBelowOne(t *testing.T) {
+	env := baseEnv()
+	env["READY_FAILURE_THRESHOLD"] = "0"
+	setEnv(t, env)
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "READY_FAILURE_THRESHOLD") {
+		t.Fatalf("error = %v, want it to mention READY_FAILURE_THRESHOLD", err)
+	}
+}
+
+func TestInvalidIntegerIsRejected(t *testing.T) {
+	for _, key := range []string{"READY_FAILURE_THRESHOLD", "POLL_MAX_RETRIES"} {
+		t.Run(key, func(t *testing.T) {
+			env := baseEnv()
+			env[key] = "not-a-number"
+			setEnv(t, env)
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), key) {
+				t.Fatalf("error = %v, want it to mention %s", err, key)
+			}
+		})
 	}
 }
 

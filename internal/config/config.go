@@ -106,8 +106,10 @@ func Load() (*Config, error) {
 
 	if c.MQTTBrokerURL == "" {
 		errs = append(errs, errors.New("MQTT_BROKER_URL is required"))
-	} else if _, err := url.Parse(c.MQTTBrokerURL); err != nil {
+	} else if u, err := url.Parse(c.MQTTBrokerURL); err != nil {
 		errs = append(errs, fmt.Errorf("MQTT_BROKER_URL is invalid: %w", err))
+	} else if u.Scheme == "" {
+		errs = append(errs, fmt.Errorf("MQTT_BROKER_URL must include a scheme, e.g. mqtt://host:1883, got %q", c.MQTTBrokerURL))
 	}
 
 	interval, err := parseDuration("POLL_INTERVAL", 5*time.Minute)
@@ -118,14 +120,21 @@ func Load() (*Config, error) {
 	}
 	c.PollInterval = interval
 
-	c.ReadyFailureThreshold = getInt("READY_FAILURE_THRESHOLD", 3)
-	if c.ReadyFailureThreshold < 1 {
+	readyFailureThreshold, err := getInt("READY_FAILURE_THRESHOLD", 3)
+	if err != nil {
+		errs = append(errs, err)
+	} else if readyFailureThreshold < 1 {
 		errs = append(errs, errors.New("READY_FAILURE_THRESHOLD must be >= 1"))
 	}
-	c.PollMaxRetries = getInt("POLL_MAX_RETRIES", 3)
-	if c.PollMaxRetries < 0 {
+	c.ReadyFailureThreshold = readyFailureThreshold
+
+	pollMaxRetries, err := getInt("POLL_MAX_RETRIES", 3)
+	if err != nil {
+		errs = append(errs, err)
+	} else if pollMaxRetries < 0 {
 		errs = append(errs, errors.New("POLL_MAX_RETRIES must be >= 0"))
 	}
+	c.PollMaxRetries = pollMaxRetries
 
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
@@ -136,10 +145,10 @@ func Load() (*Config, error) {
 // String renders the config with secrets redacted (safe to log).
 func (c *Config) String() string {
 	return fmt.Sprintf("Config{mode=%s base=%s key=%s secret=%s tickers=%q poll=%s retries=%d "+
-		"readyThreshold=%d broker=%s topicPrefix=%s discoveryPrefix=%s http=%s log=%s/%s}",
+		"readyThreshold=%d broker=%s mqttPassword=%s topicPrefix=%s discoveryPrefix=%s http=%s log=%s/%s}",
 		c.Mode, c.APIBaseURL, redact(c.APIKey), redact(c.APISecret), c.Tickers,
 		c.PollInterval, c.PollMaxRetries, c.ReadyFailureThreshold,
-		c.MQTTBrokerURL, c.TopicPrefix, c.DiscoveryPrefix, c.HTTPAddr, c.LogLevel, c.LogFormat)
+		c.MQTTBrokerURL, redact(c.MQTTPassword), c.TopicPrefix, c.DiscoveryPrefix, c.HTTPAddr, c.LogLevel, c.LogFormat)
 }
 
 func redact(s string) string {
@@ -156,16 +165,16 @@ func getEnv(key, def string) string {
 	return def
 }
 
-func getInt(key string, def int) int {
+func getInt(key string, def int) (int, error) {
 	v := os.Getenv(key)
 	if v == "" {
-		return def
+		return def, nil
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
-		return def
+		return 0, fmt.Errorf("%s is not a valid integer: %w", key, err)
 	}
-	return n
+	return n, nil
 }
 
 func parseDuration(key string, def time.Duration) (time.Duration, error) {
