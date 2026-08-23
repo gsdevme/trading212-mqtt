@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +19,9 @@ type fakeFetcher struct {
 	// failuresBeforeSuccess makes the first N calls fail, exercising retry.
 	failuresBeforeSuccess int
 	gotCurrency           string
+	// emptyCurrency makes AccountSummary return "" for Currency, exercising fetch's
+	// fallback to Config.AccountCurrency.
+	emptyCurrency bool
 }
 
 func (f *fakeFetcher) AccountSummary(context.Context) (trading212.AccountSummary, error) {
@@ -28,6 +32,9 @@ func (f *fakeFetcher) AccountSummary(context.Context) (trading212.AccountSummary
 	}
 	if f.summaryErr != nil {
 		return trading212.AccountSummary{}, f.summaryErr
+	}
+	if f.emptyCurrency {
+		return trading212.AccountSummary{ID: 1, TotalValue: 100}, nil
 	}
 	return trading212.AccountSummary{ID: 1, Currency: "GBP", TotalValue: 100}, nil
 }
@@ -112,13 +119,48 @@ func TestPollBuildsSnapshotFromBothCalls(t *testing.T) {
 	}
 }
 
-// The account currency from the summary response drives position parsing.
+// The account currency from the summary response drives position parsing —
+// it must win over the configured fallback, not merely match it. Config.AccountCurrency
+// is deliberately set to a different value ("ZZZ") than the fake summary's "GBP" so
+// this assertion can actually fail if fetch ever passes the config fallback instead
+// of the summary's currency.
 func TestPollPassesAccountCurrencyToPositions(t *testing.T) {
 	f, p, h := &fakeFetcher{}, &fakePublisher{}, &fakeHealth{}
-	newTestScheduler(f, p, h).PollNow(context.Background())
+	s := New(f, p, h, Config{
+		AccountCurrency: "ZZZ",
+		PollInterval:    time.Minute,
+		MaxRetries:      0,
+		After: func(time.Duration) <-chan time.Time {
+			ch := make(chan time.Time, 1)
+			ch <- time.Now()
+			return ch
+		},
+	})
+	s.PollNow(context.Background())
 
 	if f.gotCurrency != "GBP" {
-		t.Errorf("Positions received currency %q, want GBP from the summary response", f.gotCurrency)
+		t.Errorf("Positions received currency %q, want GBP from the summary response (not the ZZZ config fallback)", f.gotCurrency)
+	}
+}
+
+// When the summary response omits a currency, fetch falls back to Config.AccountCurrency.
+func TestPollFallsBackToConfiguredCurrencyWhenSummaryOmitsOne(t *testing.T) {
+	f := &fakeFetcher{emptyCurrency: true}
+	p, h := &fakePublisher{}, &fakeHealth{}
+	s := New(f, p, h, Config{
+		AccountCurrency: "ZZZ",
+		PollInterval:    time.Minute,
+		MaxRetries:      0,
+		After: func(time.Duration) <-chan time.Time {
+			ch := make(chan time.Time, 1)
+			ch <- time.Now()
+			return ch
+		},
+	})
+	s.PollNow(context.Background())
+
+	if f.gotCurrency != "ZZZ" {
+		t.Errorf("Positions received currency %q, want ZZZ config fallback when summary omits one", f.gotCurrency)
 	}
 }
 
@@ -148,11 +190,15 @@ func TestFailedPublishMarksFailure(t *testing.T) {
 func TestRetriesTransientFailures(t *testing.T) {
 	f := &fakeFetcher{failuresBeforeSuccess: 2}
 	p, h := &fakePublisher{}, &fakeHealth{}
+	// backoffs records the duration passed to After on each retry. PollNow runs
+	// synchronously (no goroutine), so a plain slice needs no locking here.
+	var backoffs []time.Duration
 	s := New(f, p, h, Config{
 		AccountCurrency: "GBP",
 		PollInterval:    time.Minute,
 		MaxRetries:      3,
-		After: func(time.Duration) <-chan time.Time {
+		After: func(d time.Duration) <-chan time.Time {
+			backoffs = append(backoffs, d)
 			ch := make(chan time.Time, 1)
 			ch <- time.Now()
 			return ch
@@ -166,16 +212,24 @@ func TestRetriesTransientFailures(t *testing.T) {
 	if h.successes != 1 {
 		t.Errorf("successes = %d, want 1", h.successes)
 	}
+	want := []time.Duration{time.Second, 2 * time.Second}
+	if !slices.Equal(backoffs, want) {
+		t.Errorf("backoffs = %v, want %v (exponential from 1s)", backoffs, want)
+	}
 }
 
 func TestGivesUpAfterMaxRetries(t *testing.T) {
 	f := &fakeFetcher{summaryErr: errors.New("down")}
 	p, h := &fakePublisher{}, &fakeHealth{}
+	// backoffs records the duration passed to After on each retry. PollNow runs
+	// synchronously (no goroutine), so a plain slice needs no locking here.
+	var backoffs []time.Duration
 	s := New(f, p, h, Config{
 		AccountCurrency: "GBP",
 		PollInterval:    time.Minute,
 		MaxRetries:      2,
-		After: func(time.Duration) <-chan time.Time {
+		After: func(d time.Duration) <-chan time.Time {
+			backoffs = append(backoffs, d)
 			ch := make(chan time.Time, 1)
 			ch <- time.Now()
 			return ch
@@ -188,6 +242,10 @@ func TestGivesUpAfterMaxRetries(t *testing.T) {
 	}
 	if h.failures != 1 {
 		t.Errorf("failures = %d, want 1", h.failures)
+	}
+	want := []time.Duration{time.Second, 2 * time.Second}
+	if !slices.Equal(backoffs, want) {
+		t.Errorf("backoffs = %v, want %v (exponential from 1s)", backoffs, want)
 	}
 }
 
