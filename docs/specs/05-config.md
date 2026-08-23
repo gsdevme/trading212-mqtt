@@ -14,6 +14,7 @@ with no credentials at all.
 | `T212_API_SECRET` | — | Basic-auth password; empty selects the legacy header scheme |
 | `TICKERS` | empty | Position whitelist (see below) |
 | `POLL_INTERVAL` | `5m` | Interval between polls; floored at `1m`; first poll runs immediately |
+| `POLL_MAX_RETRIES` | `3` | Retries per poll on transient failure; must be `>= 0` |
 | `MQTT_BROKER_URL` | — | Required in every mode |
 | `MQTT_USERNAME` / `MQTT_PASSWORD` | empty | Broker credentials |
 | `MQTT_CLIENT_ID` | `trading212-mqtt` | MQTT client identifier |
@@ -22,6 +23,7 @@ with no credentials at all.
 | `HTTP_ADDR` | `:8080` | Status page and probe listener |
 | `READY_FAILURE_THRESHOLD` | `3` | Consecutive poll failures before `/readyz` goes unready; minimum `1` |
 | `LOG_LEVEL` | `info` | `log/slog` level |
+| `LOG_FORMAT` | `json` | `log/slog` output format — `json` or `text` |
 
 ## `MODE` resolution
 
@@ -34,7 +36,7 @@ disagreeing with each other.
 |---|---|---|
 | `live` | `https://live.trading212.com/api/v0` | `T212_API_KEY` required |
 | `demo` | `https://demo.trading212.com/api/v0` | `T212_API_KEY` required |
-| `mock` | `MOCK_URL` (default `http://localhost:8090`) | Dummy values supplied automatically |
+| `mock` | `MOCK_URL` + `/api/v0`, default `http://localhost:8090/api/v0` | Dummy values supplied automatically |
 | anything else | — | Validation error |
 
 `T212_API_KEY` is required in `live` and `demo`; `mock` supplies dummy credentials so

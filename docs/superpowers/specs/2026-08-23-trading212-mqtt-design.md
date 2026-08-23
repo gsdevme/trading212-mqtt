@@ -269,11 +269,13 @@ discovery churn — no config is deleted or re-added, only the availability payl
 
 ## Runtime flow
 
-**Startup.** Load and validate config → construct `trading212.Client` → issue one
+**Startup.** Load and validate config → construct `trading212.Client` → start the HTTP
+server (so `/healthz` and `/readyz` answer probes for the rest of startup, rather than
+leaving the process unprobeable while credentials are validated) → issue one
 `GET /equity/account/summary` to validate credentials and learn the account id and primary
 currency (both are prerequisites for discovery: the id is the device identifier, the
 currency is every monetary entity's unit) → publish discovery for the account device and
-each whitelisted position device → start the scheduler → start the HTTP server.
+each whitelisted position device → start the scheduler.
 
 **Each poll** is exactly two API calls: `GET /equity/account/summary` and
 `GET /equity/positions`. Positions are filtered client-side against `TICKERS`. Results are

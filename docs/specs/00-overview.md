@@ -38,12 +38,14 @@ Deployed to Kubernetes as a **stateless** Deployment. Manifests live outside thi
 
 1. Load and validate config.
 2. Construct the `trading212.Client`.
-3. Issue one `GET /equity/account/summary` to validate credentials and learn the
+3. Start the HTTP server (so `/healthz` and `/readyz` answer probes for the rest of
+   startup, rather than leaving the process unprobeable while credentials are
+   validated — see `REQ-LC-03` in `06-lifecycle-health.md`).
+4. Issue one `GET /equity/account/summary` to validate credentials and learn the
    account id and primary currency — both are prerequisites for discovery: the id is
    the device identifier, the currency is every monetary entity's unit.
-4. Publish discovery for the account device and each whitelisted position device.
-5. Start the scheduler.
-6. Start the HTTP server.
+5. Publish discovery for the account device and each whitelisted position device.
+6. Start the scheduler.
 
 ## Non-goals
 
