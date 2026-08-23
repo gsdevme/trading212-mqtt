@@ -26,6 +26,10 @@ var rootCmd = &cobra.Command{
 	},
 }
 
+func init() {
+	rootCmd.AddCommand(mockCmd)
+}
+
 // Execute runs the root command, returning any error for main to report and map
 // to a non-zero exit code. Signal handling is installed once here so every
 // subcommand receives a context cancelled on SIGTERM/SIGINT via cmd.Context().
