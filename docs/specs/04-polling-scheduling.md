@@ -69,6 +69,31 @@ reporter (`REQ-SC-05`). `/readyz` tracks consecutive poll failures: after
 clears the counter back to zero. See `06-lifecycle-health.md` for the full readiness
 state machine.
 
+## Poll logging
+
+A successful poll logs one line — `published snapshot` — carrying `total_value`,
+`positions` (the count) and `held` (`REQ-SC-07`). `held` is every currently-held
+ticker ID, comma-joined, from `Snapshot.Tickers()`.
+
+The join is not cosmetic: the value is a valid `TICKERS` setting **verbatim**. With
+the default empty whitelist there is otherwise no way to learn the ticker IDs
+`TICKERS` wants — the IDs are Trading 212's own (`AAPL_US_EQ`, `VUSA_EQ`) and appear
+nowhere else in the running service. An operator reads `held=` from `kubectl logs`
+and pastes it straight into the Deployment env. The same list is rendered on the
+status page (`06-lifecycle-health.md`, `REQ-LC-08`).
+
+`Snapshot.Tickers()` sorts, so the line stays byte-identical while the holdings are
+unchanged and repeated polls do not churn the log.
+
+The scheduler stays whitelist-agnostic — filtering remains the publisher's job
+(`REQ-SC-06`) — so `held` reports what the account holds, not what is published.
+The two deliberately differ, which is the point: the untracked entries are exactly
+the ones an operator might want to add.
+
+**Accepted trade-off:** holdings now reach stdout and therefore `kubectl logs`.
+Ticker IDs and nothing else — no values, no quantities, no account id, no
+credentials — and `internal/config`'s redaction rules are untouched.
+
 ## Test seam for time
 
 The scheduler's only test seam for time is its `After` function (matching

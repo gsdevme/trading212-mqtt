@@ -13,6 +13,7 @@ import (
 
 	"github.com/gsdevme/trading212-mqtt/internal/mock"
 	"github.com/gsdevme/trading212-mqtt/internal/mqtt"
+	"github.com/gsdevme/trading212-mqtt/internal/trading212"
 )
 
 // These tests drive the real composition root — runServeWith — in-process,
@@ -540,5 +541,50 @@ func TestPublishOfflineFailureStillMarksServiceOffline(t *testing.T) {
 	}
 	if lastIndexOf(events, offlineOn(svcAvailTopic)) < 0 {
 		t.Error("the service availability topic was never written offline")
+	}
+}
+
+// The status page's per-row Tracked flag must be the same predicate the
+// publisher filters on, or the page can claim a device exists that was never
+// published.
+func TestMetricsFromSnapshotMarksWhitelistedPositions(t *testing.T) {
+	snap := trading212.Snapshot{
+		Account: trading212.AccountSummary{Currency: "GBP", TotalValue: 100},
+		Positions: []trading212.Position{
+			{Ticker: "VUSA_EQ", Name: "Vanguard S&P 500", Value: 900},
+			{Ticker: "AAPL_US_EQ", Name: "Apple Inc", Value: 1234.5},
+			{Ticker: "FREE_EQ", Name: "Freetrade", Value: 67.89},
+		},
+	}
+
+	m := metricsFromSnapshot(snap, trading212.ParseWhitelist("aapl_us_eq"))
+
+	if m.PositionCount != 3 || len(m.Positions) != 3 {
+		t.Fatalf("rows = %d, PositionCount = %d, want 3 and 3", len(m.Positions), m.PositionCount)
+	}
+	// Rows are ticker-sorted, matching the scheduler's held= line.
+	want := []struct {
+		ticker  string
+		tracked bool
+	}{
+		{"AAPL_US_EQ", true},
+		{"FREE_EQ", false},
+		{"VUSA_EQ", false},
+	}
+	for i, w := range want {
+		got := m.Positions[i]
+		if got.Ticker != w.ticker || got.Tracked != w.tracked {
+			t.Errorf("row %d = (%s, tracked=%v), want (%s, tracked=%v)", i, got.Ticker, got.Tracked, w.ticker, w.tracked)
+		}
+	}
+	if m.Positions[0].Name != "Apple Inc" || m.Positions[0].Value != 1234.5 {
+		t.Errorf("name/value not carried into the row: %+v", m.Positions[0])
+	}
+}
+
+func TestMetricsFromSnapshotWithNoHoldings(t *testing.T) {
+	m := metricsFromSnapshot(trading212.Snapshot{}, trading212.ParseWhitelist("*"))
+	if m.Positions != nil {
+		t.Errorf("Positions = %v, want nil so the page omits the holdings table", m.Positions)
 	}
 }

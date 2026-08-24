@@ -2,6 +2,7 @@ package trading212
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 )
 
@@ -160,5 +161,24 @@ func TestSnapshotHeld(t *testing.T) {
 	}
 	if _, ok := s.Held("MSFT_US_EQ"); ok {
 		t.Error("Held must report false for a position that is not held")
+	}
+}
+
+// Tickers is what an operator pastes into TICKERS, so casing must survive
+// untouched and the order must be stable across polls.
+func TestSnapshotTickers(t *testing.T) {
+	s := Snapshot{Positions: []Position{
+		{Ticker: "VUSA_EQ"}, {Ticker: "AAPL_US_EQ"}, {Ticker: "free_eq"},
+	}}
+	got := s.Tickers()
+	want := []string{"AAPL_US_EQ", "VUSA_EQ", "free_eq"}
+	if !slices.Equal(got, want) {
+		t.Errorf("Tickers() = %v, want %v", got, want)
+	}
+}
+
+func TestSnapshotTickersEmpty(t *testing.T) {
+	if got := (Snapshot{}).Tickers(); got != nil {
+		t.Errorf("Tickers() on an empty snapshot = %v, want nil", got)
 	}
 }

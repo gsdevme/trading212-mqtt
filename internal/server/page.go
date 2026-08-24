@@ -4,6 +4,7 @@ import (
 	"html/template"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -23,6 +24,10 @@ type pageData struct {
 	Metrics     Metrics
 	ReturnPct   string
 	LastUpdated string
+
+	// TickersCSV is every held ticker, comma-joined, so the page can offer a
+	// TICKERS value that is ready to paste into .env or the Deployment env.
+	TickersCSV string
 }
 
 var statusTemplate = template.Must(template.New("status").Parse(`<!doctype html>
@@ -36,6 +41,10 @@ var statusTemplate = template.Must(template.New("status").Parse(`<!doctype html>
  table { border-collapse: collapse; width: 100%; margin-bottom: 1.5rem; }
  th, td { text-align: left; padding: 0.35rem 0.75rem 0.35rem 0; border-bottom: 1px solid #ddd; }
  th { font-weight: 600; width: 45%; }
+ .holdings th, .holdings td { width: auto; }
+ .holdings td.num { text-align: right; }
+ .tickers { margin-bottom: 1.5rem; }
+ .tickers code { background: #f3f3f3; padding: 0.2rem 0.4rem; word-break: break-all; }
  .ok { color: #0a7d29; } .bad { color: #b00020; }
 </style>
 </head>
@@ -61,6 +70,16 @@ var statusTemplate = template.Must(template.New("status").Parse(`<!doctype html>
  <tr><th>Positions</th><td>{{ .Metrics.TrackedCount }} tracked of {{ .Metrics.PositionCount }} held</td></tr>
  <tr><th>Last updated</th><td>{{ .LastUpdated }}</td></tr>
 </table>
+
+{{ if .Metrics.Positions }}
+<table class="holdings">
+ <tr><th>Ticker</th><th>Name</th><th>Value</th><th>Tracked</th></tr>
+ {{ range .Metrics.Positions }}
+ <tr><td>{{ .Ticker }}</td><td>{{ .Name }}</td><td class="num">{{ printf "%.2f" .Value }} {{ $.Metrics.Currency }}</td><td>{{ if .Tracked }}yes{{ else }}no{{ end }}</td></tr>
+ {{ end }}
+</table>
+<p class="tickers">Track these in Home Assistant with <code>TICKERS={{ .TickersCSV }}</code></p>
+{{ end }}
 {{ else }}
 <p>Waiting for the first poll — initialising.</p>
 {{ end }}
@@ -86,6 +105,13 @@ func (s *Server) handleRoot(w http.ResponseWriter, _ *http.Request) {
 	d.ReturnPct = "unknown"
 	if d.Metrics.ReturnPct != nil {
 		d.ReturnPct = strconv.FormatFloat(*d.Metrics.ReturnPct, 'f', 2, 64) + " %"
+	}
+	if len(d.Metrics.Positions) > 0 {
+		tickers := make([]string, 0, len(d.Metrics.Positions))
+		for _, p := range d.Metrics.Positions {
+			tickers = append(tickers, p.Ticker)
+		}
+		d.TickersCSV = strings.Join(tickers, ",")
 	}
 	if !d.Metrics.LastUpdated.IsZero() {
 		d.LastUpdated = d.Metrics.LastUpdated.Format(time.RFC3339)
