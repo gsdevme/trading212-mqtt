@@ -426,6 +426,25 @@ func TestPublishOfflineCoversTrackedPositions(t *testing.T) {
 	}
 }
 
+func TestPublishOfflineAttemptsAlreadyOfflinePositions(t *testing.T) {
+	rec := NewRecordingPublisher()
+	counting := &countingTopicPublisher{inner: rec, counts: map[string]int{}}
+	s := New(counting, haConfig(), trading212.ParseWhitelist("AAPL_US_EQ"))
+	ctx := context.Background()
+
+	if err := s.PublishDiscovery(ctx); err != nil {
+		t.Fatalf("PublishDiscovery: %v", err)
+	}
+	if err := s.PublishOffline(ctx); err != nil {
+		t.Fatalf("PublishOffline: %v", err)
+	}
+
+	topic := "trading212/12345678/positions/aapl_us_eq/availability"
+	if got := counting.counts[topic]; got != 2 {
+		t.Errorf("offline availability publishes = %d, want 2", got)
+	}
+}
+
 // TestPublishOfflineIsTerminal guards Task 14 fix round 3: PublishOffline
 // latches Service closed, under the same publishMu that serialises every
 // publish, so nothing published afterwards — including a reconnect callback
@@ -698,5 +717,15 @@ func (p *rejectingPublisher) Publish(ctx context.Context, topic string, payload 
 	if p.armed && topic == p.deny {
 		return errors.New("broker rejected")
 	}
+	return p.inner.Publish(ctx, topic, payload, retain)
+}
+
+type countingTopicPublisher struct {
+	inner  *RecordingPublisher
+	counts map[string]int
+}
+
+func (p *countingTopicPublisher) Publish(ctx context.Context, topic string, payload []byte, retain bool) error {
+	p.counts[topic]++
 	return p.inner.Publish(ctx, topic, payload, retain)
 }

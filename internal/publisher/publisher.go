@@ -293,9 +293,14 @@ func (s *Service) PublishOffline(ctx context.Context) error {
 	// and serve.go's clean Disconnect suppresses the Last Will that would
 	// otherwise cover for it. Home Assistant would then show a dead service as
 	// healthy, indefinitely.
+	//
+	// publishPositionAvailability is called rather than the memoising
+	// setPositionAvailability so the write happens even when online already
+	// reads false: on shutdown, getting the retained offline onto the broker is
+	// the whole point, and a skipped publish is indistinguishable from a lost one.
 	var errs []error
 	for _, t := range s.trackedTickers() {
-		if err := s.setPositionAvailability(ctx, t, false); err != nil {
+		if err := s.publishPositionAvailability(ctx, t, false); err != nil {
 			errs = append(errs, err)
 		}
 	}
