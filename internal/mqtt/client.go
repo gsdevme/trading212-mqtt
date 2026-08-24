@@ -62,8 +62,17 @@ func Connect(ctx context.Context, opts Options) (*Client, error) {
 		OnConnectError: func(err error) {
 			opts.Logger.Warn("mqtt connection attempt failed", "err", err)
 		},
-		OnConnectionUp: func(_ *autopaho.ConnectionManager, _ *paho.Connack) {
+		OnConnectionUp: func(cm *autopaho.ConnectionManager, _ *paho.Connack) {
 			opts.Logger.Info("mqtt connected")
+			// autopaho starts its dial goroutine immediately and gives no
+			// ordering guarantee against NewConnection's return, so this
+			// closure — not the assignment after NewConnection below — is what
+			// makes c.cm safe to read from Publish/Disconnect the first time
+			// this fires. Assign it under the same mutex that guards onUp,
+			// before firing the user callback.
+			c.mu.Lock()
+			c.cm = cm
+			c.mu.Unlock()
 			c.fireOnUp(ctx)
 		},
 		ClientConfig: paho.ClientConfig{ClientID: opts.ClientID},
@@ -77,7 +86,11 @@ func Connect(ctx context.Context, opts Options) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mqtt new connection: %w", err)
 	}
+	// Harmless alongside the OnConnectionUp assignment above, and covers the
+	// no-callback path.
+	c.mu.Lock()
 	c.cm = cm
+	c.mu.Unlock()
 	if err := cm.AwaitConnection(ctx); err != nil {
 		return nil, fmt.Errorf("mqtt await connection: %w", err)
 	}
@@ -104,7 +117,11 @@ func (c *Client) fireOnUp(ctx context.Context) {
 
 // Publish sends a message at QoS 1 with the given retain flag.
 func (c *Client) Publish(ctx context.Context, topic string, payload []byte, retain bool) error {
-	_, err := c.cm.Publish(ctx, &paho.Publish{
+	c.mu.Lock()
+	cm := c.cm
+	c.mu.Unlock()
+
+	_, err := cm.Publish(ctx, &paho.Publish{
 		QoS:     1,
 		Topic:   topic,
 		Payload: payload,
@@ -118,5 +135,9 @@ func (c *Client) Publish(ctx context.Context, topic string, payload []byte, reta
 
 // Disconnect closes the connection cleanly, which suppresses the Last Will.
 func (c *Client) Disconnect(ctx context.Context) error {
-	return c.cm.Disconnect(ctx)
+	c.mu.Lock()
+	cm := c.cm
+	c.mu.Unlock()
+
+	return cm.Disconnect(ctx)
 }

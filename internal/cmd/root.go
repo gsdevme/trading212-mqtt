@@ -27,7 +27,9 @@ var rootCmd = &cobra.Command{
 }
 
 func init() {
+	rootCmd.AddCommand(serveCmd)
 	rootCmd.AddCommand(mockCmd)
+	rootCmd.AddCommand(dumpCmd)
 }
 
 // Execute runs the root command, returning any error for main to report and map

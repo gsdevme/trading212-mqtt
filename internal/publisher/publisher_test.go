@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -275,6 +276,96 @@ func TestPlaceholderDiscoveryIsRefinedOnFirstSighting(t *testing.T) {
 	}
 }
 
+// TestConcurrentDiscoveryAndSnapshotDoNotClobberRefinedDiscovery guards the
+// coarse publishMu added alongside Task 14's serve wiring: an MQTT reconnect's
+// PublishDiscovery (placeholder path, fingerprint "|") must never interleave
+// with a concurrent poll's PublishSnapshot (refined path, fingerprint
+// "Apple Inc.|USD") for the same position. Without publishMu serialising the
+// two, the placeholder can win the last retained write and strand the
+// position's discovery on the raw ticker and account currency.
+//
+// racePublisher pauses PublishDiscovery's placeholder publish of the
+// avg_price config topic exactly once, mid-flight, and only resumes it once
+// the test has given PublishSnapshot a genuine window to run concurrently. If
+// publishMu is doing its job, PublishSnapshot cannot even acquire it until
+// PublishDiscovery has returned (pause included), so it always publishes the
+// refined payload after, and last. If publishMu is missing, PublishSnapshot
+// races ahead and writes the refined payload first, and the paused
+// placeholder then overwrites it when it resumes — the exact corruption
+// Addition 1 exists to prevent.
+func TestConcurrentDiscoveryAndSnapshotDoNotClobberRefinedDiscovery(t *testing.T) {
+	const avgPriceTopic = "homeassistant/sensor/t212_12345678_aapl_us_eq/avg_price/config"
+
+	rec := NewRecordingPublisher()
+	fp := &racePublisher{inner: rec, delayTopic: avgPriceTopic, entered: make(chan struct{}), release: make(chan struct{})}
+	s := New(fp, haConfig(), trading212.ParseWhitelist("AAPL_US_EQ"))
+	ctx := context.Background()
+
+	discoDone := make(chan error, 1)
+	go func() { discoDone <- s.PublishDiscovery(ctx) }()
+
+	select {
+	case <-fp.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("PublishDiscovery never reached the placeholder avg_price publish")
+	}
+
+	snapDone := make(chan error, 1)
+	go func() { snapDone <- s.PublishSnapshot(ctx, testSnapshot()) }()
+
+	// Give PublishSnapshot a genuine window to race ahead and complete before
+	// the paused placeholder publish is released. This is generous enough that
+	// an unguarded PublishSnapshot (no lock in its way) reliably finishes
+	// within it, while a correctly-guarded one stays blocked on publishMu for
+	// the whole window regardless.
+	time.Sleep(50 * time.Millisecond)
+	close(fp.release)
+
+	if err := <-discoDone; err != nil {
+		t.Fatalf("PublishDiscovery: %v", err)
+	}
+	if err := <-snapDone; err != nil {
+		t.Fatalf("PublishSnapshot: %v", err)
+	}
+
+	r := mustGet(t, rec, avgPriceTopic)
+	p := mustDecode(t, r)
+	if p["unit_of_measurement"] != "USD" {
+		t.Errorf("final avg_price unit = %v, want the refined USD — the stale placeholder won the last write", p["unit_of_measurement"])
+	}
+	dev, _ := p["device"].(map[string]any)
+	if dev["name"] != "Trading 212 – Apple Inc." {
+		t.Errorf("final device name = %v, want the refined %q — the stale placeholder won the last write", dev["name"], "Trading 212 – Apple Inc.")
+	}
+}
+
+// racePublisher wraps a Publisher and, exactly once — on the first Publish
+// call for delayTopic — signals entered and then blocks until release is
+// closed. This opens a controlled window in which a concurrent caller can, if
+// nothing is serialising them, complete its own publish before the paused
+// call resumes and (wrongly) overwrites it.
+//
+// This deliberately does NOT use sync.Once: Once.Do blocks every concurrent
+// caller until the first invocation completes, which would itself serialise
+// the two goroutines and defeat the point of the test. triggered is a plain
+// CompareAndSwap gate instead, so only the very first matching call pauses —
+// any call that arrives while it is paused proceeds immediately.
+type racePublisher struct {
+	inner      Publisher
+	delayTopic string
+	entered    chan struct{}
+	release    chan struct{}
+	triggered  atomic.Bool
+}
+
+func (p *racePublisher) Publish(ctx context.Context, topic string, payload []byte, retain bool) error {
+	if topic == p.delayTopic && p.triggered.CompareAndSwap(false, true) {
+		close(p.entered)
+		<-p.release
+	}
+	return p.inner.Publish(ctx, topic, payload, retain)
+}
+
 // Discovery must not be republished on every poll — only when the metadata that
 // shapes it actually changes.
 func TestDiscoveryIsNotRepublishedWhenUnchanged(t *testing.T) {
@@ -331,6 +422,48 @@ func TestPublishOfflineCoversTrackedPositions(t *testing.T) {
 		}
 		if string(r.Payload) != "offline" {
 			t.Errorf("%s = %q, want offline", topic, r.Payload)
+		}
+	}
+}
+
+// TestPublishOfflineIsTerminal guards Task 14 fix round 3: PublishOffline
+// latches Service closed, under the same publishMu that serialises every
+// publish, so nothing published afterwards — including a reconnect callback
+// that only gets to acquire publishMu once PublishOffline has already run —
+// can resurrect an availability topic the shutdown sequence just wrote
+// offline. This is what closes the TOCTOU a plain "shuttingDown" flag checked
+// outside the lock could not (see PublishOffline's doc comment).
+func TestPublishOfflineIsTerminal(t *testing.T) {
+	rec := NewRecordingPublisher()
+	s := New(rec, haConfig(), trading212.ParseWhitelist("AAPL_US_EQ"))
+	ctx := context.Background()
+
+	if err := s.PublishSnapshot(ctx, testSnapshot()); err != nil {
+		t.Fatalf("PublishSnapshot: %v", err)
+	}
+	if err := s.PublishOffline(ctx); err != nil {
+		t.Fatalf("PublishOffline: %v", err)
+	}
+
+	// Simulate a reconnect callback that lost the race to PublishOffline: both
+	// of these must now be no-ops.
+	if err := s.PublishSnapshot(ctx, testSnapshot()); err != nil {
+		t.Fatalf("PublishSnapshot after PublishOffline: %v", err)
+	}
+	if err := s.PublishAvailability(ctx, true); err != nil {
+		t.Fatalf("PublishAvailability after PublishOffline: %v", err)
+	}
+
+	for _, topic := range []string{
+		"trading212/12345678/availability",
+		"trading212/12345678/positions/aapl_us_eq/availability",
+	} {
+		r, ok := rec.Get(topic)
+		if !ok {
+			t.Fatalf("missing %s", topic)
+		}
+		if string(r.Payload) != "offline" {
+			t.Errorf("%s = %q after a post-shutdown republish, want it to stay offline", topic, r.Payload)
 		}
 	}
 }

@@ -50,6 +50,28 @@ type Service struct {
 	cfg homeassistant.Config
 	wl  trading212.Whitelist
 
+	// publishMu serialises the four public entry points (PublishDiscovery,
+	// PublishSnapshot, PublishAvailability, PublishOffline) against each other.
+	// It is held for the whole body of each, distinct from mu below, so that an
+	// MQTT reconnect's PublishAvailability/PublishDiscovery — fired from
+	// internal/mqtt's `go f(ctx)` callback — cannot interleave with the
+	// scheduler's concurrent PublishSnapshot. Without it, a reconnect landing
+	// mid-poll can race the placeholder discovery path (fingerprint "|")
+	// against the refined path ("Apple Inc.|USD") and leave the placeholder's
+	// write as the last one in, stranding a position's retained discovery on
+	// the raw ticker and account currency until the next poll.
+	//
+	// publishMu is never held across the network publishes done under mu below
+	// — those two mutexes have distinct jobs and holding the map mutex across a
+	// publish would serialise every publish behind it.
+	publishMu sync.Mutex
+	// closed is set by PublishOffline, under publishMu, marking the service as
+	// shut down: PublishDiscovery, PublishSnapshot and PublishAvailability all
+	// check it immediately after acquiring publishMu and no-op if it is set.
+	// Checking under the same lock that serialises the writes is what makes
+	// this airtight — see PublishOffline's doc comment.
+	closed bool
+
 	mu sync.Mutex
 	// discovered maps trading212.Slug(ticker) to what its discovery was built
 	// from. It is keyed by slug, not by the raw ticker, because a whitelist
@@ -79,6 +101,19 @@ func New(pub Publisher, cfg homeassistant.Config, wl trading212.Whitelist) *Serv
 // AvailabilityTopic exposes the service-level topic, used as the MQTT Last Will.
 func (s *Service) AvailabilityTopic() string { return s.cfg.AvailabilityTopic() }
 
+// TrackedCount returns how many positions currently have a Home Assistant
+// device.
+//
+// It takes only the fine-grained mu, not publishMu: callers reach this after a
+// publish path's PublishSnapshot call has already returned (and so already
+// released publishMu), never from inside one, so there is no lock ordering
+// against the coarse mutex to reason about.
+func (s *Service) TrackedCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.discovered)
+}
+
 // PublishDiscovery publishes the account device's discovery configs, plus
 // placeholder configs for every explicitly whitelisted ticker.
 //
@@ -88,6 +123,12 @@ func (s *Service) AvailabilityTopic() string { return s.cfg.AvailabilityTopic() 
 // holding appears in Home Assistant immediately — greyed out — rather than
 // silently missing until it is next held.
 func (s *Service) PublishDiscovery(ctx context.Context) error {
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+	if s.closed {
+		return nil // PublishOffline has run; see its doc comment
+	}
+
 	msgs, err := homeassistant.BuildAccountDiscovery(s.cfg)
 	if err != nil {
 		return err
@@ -109,6 +150,20 @@ func (s *Service) PublishDiscovery(ctx context.Context) error {
 
 // PublishAvailability publishes the service-level online/offline state.
 func (s *Service) PublishAvailability(ctx context.Context, online bool) error {
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+	if s.closed {
+		return nil // PublishOffline has run; see its doc comment
+	}
+
+	return s.publishServiceAvailability(ctx, online)
+}
+
+// publishServiceAvailability is the unlocked implementation shared by
+// PublishAvailability and PublishOffline, both of which hold publishMu for
+// their whole body — PublishOffline calls this directly rather than the public
+// PublishAvailability to avoid re-locking the non-reentrant publishMu.
+func (s *Service) publishServiceAvailability(ctx context.Context, online bool) error {
 	return s.pub.Publish(ctx, s.cfg.AvailabilityTopic(), []byte(availabilityPayload(online)), true)
 }
 
@@ -117,13 +172,26 @@ func (s *Service) PublishAvailability(ctx context.Context, online bool) error {
 //
 // It iterates discovered, not online, so a placeholder that was never held is
 // still explicitly marked offline on shutdown.
+//
+// PublishOffline is terminal: it is, semantically, the last thing this
+// Service ever publishes. It latches closed under publishMu before doing its
+// work, so PublishDiscovery, PublishSnapshot and PublishAvailability all
+// become deliberate no-ops from this point on — including for a reconnect
+// callback that was mid-flight when shutdown began and only gets to acquire
+// publishMu afterwards. Do not remove this guard: without it, such a callback
+// can republish "online" over the "offline" written here, with nothing left
+// to ever correct it.
 func (s *Service) PublishOffline(ctx context.Context) error {
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+	s.closed = true
+
 	for _, t := range s.trackedTickers() {
 		if err := s.setPositionAvailability(ctx, t, false); err != nil {
 			return err
 		}
 	}
-	return s.PublishAvailability(ctx, false)
+	return s.publishServiceAvailability(ctx, false)
 }
 
 // PublishSnapshot publishes one poll's worth of state: the account document,
@@ -133,6 +201,12 @@ func (s *Service) PublishOffline(ctx context.Context) error {
 // that is not in the snapshot is marked offline but keeps its discovery, so
 // selling out and buying back in needs no discovery churn.
 func (s *Service) PublishSnapshot(ctx context.Context, snap trading212.Snapshot) error {
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+	if s.closed {
+		return nil // PublishOffline has run; see its doc comment
+	}
+
 	body, err := json.Marshal(snap.Account)
 	if err != nil {
 		return fmt.Errorf("marshal account state: %w", err)
