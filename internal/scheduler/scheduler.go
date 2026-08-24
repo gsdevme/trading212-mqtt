@@ -28,6 +28,13 @@ type HealthReporter interface {
 	MarkFailure()
 }
 
+// defaultPollInterval is used when Config.PollInterval is non-positive. It
+// matches config.POLL_INTERVAL's default; production always supplies a value
+// above config.MinPollInterval, but that is an invariant of a different package
+// and time.NewTicker panics on a non-positive duration, so New enforces a floor
+// of its own rather than trusting its caller.
+const defaultPollInterval = 5 * time.Minute
+
 // Config configures the scheduler.
 type Config struct {
 	// AccountCurrency is the fallback currency for positions whose response
@@ -62,6 +69,9 @@ func New(f Fetcher, p SnapshotPublisher, h HealthReporter, cfg Config) *Schedule
 	}
 	if cfg.MaxRetries < 0 {
 		cfg.MaxRetries = 0
+	}
+	if cfg.PollInterval <= 0 {
+		cfg.PollInterval = defaultPollInterval
 	}
 	return &Scheduler{
 		fetcher: f, publisher: p, health: h, cfg: cfg,

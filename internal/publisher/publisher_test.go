@@ -468,6 +468,186 @@ func TestPublishOfflineIsTerminal(t *testing.T) {
 	}
 }
 
+// REQ-HA-13. Republish must restore what the Service already knows, not rerun
+// startup: a held position stays online and keeps the discovery built from its
+// real instrument metadata. PublishDiscovery in this position would revert both.
+func TestRepublishRestoresRefinedDiscoveryAndHeldAvailability(t *testing.T) {
+	rec := NewRecordingPublisher()
+	s := New(rec, haConfig(), trading212.ParseWhitelist("AAPL_US_EQ"))
+	ctx := context.Background()
+
+	if err := s.PublishDiscovery(ctx); err != nil {
+		t.Fatalf("PublishDiscovery: %v", err)
+	}
+	if err := s.PublishSnapshot(ctx, testSnapshot()); err != nil {
+		t.Fatalf("PublishSnapshot: %v", err)
+	}
+
+	// The broker restarts without persistence: every retained message is gone.
+	rec.Reset()
+	if err := s.Republish(ctx); err != nil {
+		t.Fatalf("Republish: %v", err)
+	}
+
+	av := mustGet(t, rec, "trading212/12345678/positions/aapl_us_eq/availability")
+	if string(av.Payload) != "online" {
+		t.Errorf("availability = %q after a reconnect, want online — the position is still held", av.Payload)
+	}
+	p := mustDecode(t, mustGet(t, rec, "homeassistant/sensor/t212_12345678_aapl_us_eq/avg_price/config"))
+	if p["unit_of_measurement"] != "USD" {
+		t.Errorf("avg_price unit = %v, want the instrument currency USD", p["unit_of_measurement"])
+	}
+	dev, _ := p["device"].(map[string]any)
+	if dev["name"] != "Trading 212 – Apple Inc." {
+		t.Errorf("device name = %v, want the refined instrument name", dev["name"])
+	}
+	// Account discovery must come back too.
+	mustGet(t, rec, "homeassistant/sensor/t212_12345678/total_value/config")
+}
+
+// REQ-HA-13 with TICKERS=*: the whitelist has no static entries, so a reconnect
+// handler built on PublishDiscovery republished nothing about positions at all
+// and the in-process memos made every later poll short-circuit too.
+func TestRepublishRestoresPositionsWhenWhitelistIsAll(t *testing.T) {
+	rec := NewRecordingPublisher()
+	s := New(rec, haConfig(), trading212.ParseWhitelist("*"))
+	ctx := context.Background()
+
+	if err := s.PublishSnapshot(ctx, testSnapshot()); err != nil {
+		t.Fatalf("PublishSnapshot: %v", err)
+	}
+	rec.Reset()
+	if err := s.Republish(ctx); err != nil {
+		t.Fatalf("Republish: %v", err)
+	}
+
+	for _, topic := range []string{
+		"homeassistant/sensor/t212_12345678_aapl_us_eq/avg_price/config",
+		"homeassistant/sensor/t212_12345678_vusa_eq/avg_price/config",
+		"trading212/12345678/positions/aapl_us_eq/availability",
+		"trading212/12345678/positions/vusa_eq/availability",
+	} {
+		if _, ok := rec.Get(topic); !ok {
+			t.Errorf("%s was not republished; got %v", topic, rec.Topics())
+		}
+	}
+}
+
+// A tracked position that has been sold out must come back offline, not online:
+// Republish re-asserts the last-known value rather than assuming either state.
+func TestRepublishRestoresUnheldPositionOffline(t *testing.T) {
+	rec := NewRecordingPublisher()
+	s := New(rec, haConfig(), trading212.ParseWhitelist("AAPL_US_EQ"))
+	ctx := context.Background()
+
+	if err := s.PublishSnapshot(ctx, testSnapshot()); err != nil {
+		t.Fatalf("PublishSnapshot: %v", err)
+	}
+	// Next poll no longer holds it.
+	sold := testSnapshot()
+	sold.Positions = nil
+	if err := s.PublishSnapshot(ctx, sold); err != nil {
+		t.Fatalf("PublishSnapshot: %v", err)
+	}
+
+	rec.Reset()
+	if err := s.Republish(ctx); err != nil {
+		t.Fatalf("Republish: %v", err)
+	}
+	av := mustGet(t, rec, "trading212/12345678/positions/aapl_us_eq/availability")
+	if string(av.Payload) != "offline" {
+		t.Errorf("availability = %q, want offline for a position that is no longer held", av.Payload)
+	}
+}
+
+// REQ-HA-09 survives the split: a statically whitelisted ticker no poll has ever
+// seen still gets placeholder discovery and a retained offline from Republish,
+// which matters when the first connection-up beats the initial PublishDiscovery.
+func TestRepublishStillPlaceholdersNeverSeenStaticTickers(t *testing.T) {
+	rec := NewRecordingPublisher()
+	s := New(rec, haConfig(), trading212.ParseWhitelist("NOTHELD_EQ"))
+
+	if err := s.Republish(context.Background()); err != nil {
+		t.Fatalf("Republish: %v", err)
+	}
+
+	p := mustDecode(t, mustGet(t, rec, "homeassistant/sensor/t212_12345678_notheld_eq/value/config"))
+	dev, _ := p["device"].(map[string]any)
+	if dev["name"] != "Trading 212 – NOTHELD_EQ" {
+		t.Errorf("placeholder device name = %v, want the raw ticker", dev["name"])
+	}
+	av := mustGet(t, rec, "trading212/12345678/positions/notheld_eq/availability")
+	if string(av.Payload) != "offline" {
+		t.Errorf("placeholder availability = %q, want offline", av.Payload)
+	}
+}
+
+// Republish is one of the entry points PublishOffline's closed latch must
+// neutralise: it runs from the MQTT reconnect callback, which can lose the race
+// to shutdown and only acquire publishMu afterwards.
+func TestRepublishIsANoOpAfterPublishOffline(t *testing.T) {
+	rec := NewRecordingPublisher()
+	s := New(rec, haConfig(), trading212.ParseWhitelist("AAPL_US_EQ"))
+	ctx := context.Background()
+
+	if err := s.PublishSnapshot(ctx, testSnapshot()); err != nil {
+		t.Fatalf("PublishSnapshot: %v", err)
+	}
+	if err := s.PublishOffline(ctx); err != nil {
+		t.Fatalf("PublishOffline: %v", err)
+	}
+	if err := s.Republish(ctx); err != nil {
+		t.Fatalf("Republish after PublishOffline: %v", err)
+	}
+
+	for _, topic := range []string{
+		"trading212/12345678/availability",
+		"trading212/12345678/positions/aapl_us_eq/availability",
+	} {
+		r := mustGet(t, rec, topic)
+		if string(r.Payload) != "offline" {
+			t.Errorf("%s = %q after a post-shutdown Republish, want it to stay offline", topic, r.Payload)
+		}
+	}
+}
+
+// A position availability publish failing during shutdown must not strand the
+// service topic retained-online: closed is already latched so nothing can retry,
+// and serve.go's clean Disconnect suppresses the Last Will that would otherwise
+// cover for it. Every position is attempted; the failures are aggregated.
+func TestPublishOfflineWritesServiceTopicEvenWhenAPositionFails(t *testing.T) {
+	rec := NewRecordingPublisher()
+	rejecting := &rejectingPublisher{
+		inner: rec,
+		deny:  "trading212/12345678/positions/aapl_us_eq/availability",
+	}
+	s := New(rejecting, haConfig(), trading212.ParseWhitelist("AAPL_US_EQ,VUSA_EQ"))
+	ctx := context.Background()
+
+	if err := s.PublishSnapshot(ctx, testSnapshot()); err != nil {
+		t.Fatalf("PublishSnapshot: %v", err)
+	}
+	rejecting.armed = true // the broker only starts refusing during shutdown
+
+	err := s.PublishOffline(ctx)
+	if err == nil {
+		t.Fatal("PublishOffline must report the rejected publish")
+	}
+	if !strings.Contains(err.Error(), "AAPL_US_EQ") {
+		t.Errorf("error = %v, want it to name the failing position", err)
+	}
+
+	r := mustGet(t, rec, "trading212/12345678/availability")
+	if string(r.Payload) != "offline" {
+		t.Fatalf("service availability = %q after a failed position publish, want offline", r.Payload)
+	}
+	// The other position must still have been attempted, not skipped.
+	r = mustGet(t, rec, "trading212/12345678/positions/vusa_eq/availability")
+	if string(r.Payload) != "offline" {
+		t.Errorf("vusa_eq availability = %q, want offline", r.Payload)
+	}
+}
+
 func TestPublishSnapshotPropagatesTransportErrors(t *testing.T) {
 	s := New(failingPublisher{}, haConfig(), trading212.ParseWhitelist(""))
 	if err := s.PublishSnapshot(context.Background(), testSnapshot()); err == nil {
@@ -505,3 +685,18 @@ func (c *countingPublisher) Publish(ctx context.Context, topic string, payload [
 }
 
 func (c *countingPublisher) discoveryCount() int { return c.n }
+
+// rejectingPublisher fails every publish to one topic and passes the rest
+// through, standing in for a broker ACL denial or an unacked QoS 1 publish.
+type rejectingPublisher struct {
+	inner *RecordingPublisher
+	deny  string
+	armed bool
+}
+
+func (p *rejectingPublisher) Publish(ctx context.Context, topic string, payload []byte, retain bool) error {
+	if p.armed && topic == p.deny {
+		return errors.New("broker rejected")
+	}
+	return p.inner.Publish(ctx, topic, payload, retain)
+}

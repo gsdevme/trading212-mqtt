@@ -89,8 +89,13 @@ Prefix meanings:
   QoS 1. → `mqtt/client.go`, `publisher/publisher.go`
 - **REQ-HA-12** `Publisher` is an interface with an autopaho backend and a recording
   fake. → `publisher/publisher.go`, `publisher/recording.go`
-- **REQ-HA-13** Discovery and `online` are republished on every MQTT
-  (re)connection. → `mqtt/client.go`, `cmd/serve.go`
+- **REQ-HA-13** Every MQTT (re)connection republishes the service `online`, the
+  account discovery, and — for each tracked position — its discovery rebuilt from the
+  stored instrument metadata plus its last-known availability, so a refined, held
+  position comes back refined and `online`. Statically whitelisted tickers never yet
+  seen still get placeholder discovery and `offline`. This is a distinct entry point
+  from the startup routine (`Service.Republish`, not `PublishDiscovery`). →
+  `publisher/publisher.go`, `mqtt/client.go`, `cmd/serve.go`
 
 ## Scheduling (`internal/scheduler`)
 
@@ -122,9 +127,14 @@ Prefix meanings:
   after `READY_FAILURE_THRESHOLD` consecutive failures. → `server/server.go`
 - **REQ-LC-03** The HTTP listener starts before the first API call so probes answer
   during init. → `cmd/serve.go`
-- **REQ-LC-04** 401/403 during startup validation is fatal. → `cmd/serve.go`
+- **REQ-LC-04** A failed startup validation call is fatal: the process logs and exits
+  non-zero rather than starting a scheduler with nothing to publish. The one exception
+  is the root context already being cancelled — a `SIGTERM` landing mid-startup, which
+  is a normal termination and exits 0. → `cmd/serve.go`
 - **REQ-LC-05** `SIGTERM`/`SIGINT` publishes retained `offline` to every availability
-  topic, disconnects cleanly, and exits 0. → `cmd/root.go`, `cmd/serve.go`
+  topic — every position attempted, and the service topic written unconditionally even
+  if a position publish fails — then disconnects cleanly and exits 0. →
+  `cmd/root.go`, `cmd/serve.go`, `publisher/publisher.go`
 - **REQ-LC-06** The status page masks the account id to its last 4 digits. → `server/page.go`
 - **REQ-LC-07** Nothing is written to disk at runtime. → whole tree
 

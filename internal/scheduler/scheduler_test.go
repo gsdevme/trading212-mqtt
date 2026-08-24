@@ -287,3 +287,28 @@ func TestRunPollsImmediatelyThenStopsOnContextCancel(t *testing.T) {
 		t.Fatal("Run did not return after context cancellation")
 	}
 }
+
+// New must normalise a non-positive PollInterval the same way it normalises
+// Logger, After and MaxRetries: Run builds a time.Ticker from it, and
+// time.NewTicker panics on a duration <= 0. The acceptance suite already
+// constructs a Scheduler with PollInterval unset and escapes only because it
+// calls PollNow rather than Run.
+func TestNewClampsNonPositivePollInterval(t *testing.T) {
+	for _, d := range []time.Duration{0, -time.Second} {
+		s := New(&fakeFetcher{}, &fakePublisher{}, &fakeHealth{}, Config{PollInterval: d})
+		if s.cfg.PollInterval != defaultPollInterval {
+			t.Errorf("PollInterval %v was normalised to %v, want %v", d, s.cfg.PollInterval, defaultPollInterval)
+		}
+
+		// The behavioural half: Run must not panic, and must return on cancel.
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { defer close(done); s.Run(ctx) }()
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Run did not return after cancellation")
+		}
+	}
+}

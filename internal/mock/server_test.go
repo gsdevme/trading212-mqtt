@@ -52,8 +52,12 @@ func TestServesPositions(t *testing.T) {
 	if !ok {
 		t.Fatal("position missing instrument object")
 	}
-	if inst["ticker"] == "" {
-		t.Error("position missing ticker")
+	// Type-assert before comparing: inst is map[string]any, so an absent key
+	// yields the nil interface and `inst["ticker"] == ""` would be false —
+	// i.e. would pass for a payload carrying no ticker at all.
+	wantTicker := Defaults().Positions[0].Ticker
+	if ticker, ok := inst["ticker"].(string); !ok || ticker != wantTicker {
+		t.Errorf("position ticker = %#v, want %q", inst["ticker"], wantTicker)
 	}
 	if _, ok := ps[0]["walletImpact"]; !ok {
 		t.Error("position missing walletImpact object")

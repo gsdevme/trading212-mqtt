@@ -6,8 +6,27 @@ import (
 	"time"
 )
 
+// allEnvKeys is every variable Load reads. setEnv clears all of them before
+// applying a case's values, so a test asserting on a variable being *absent*
+// means it: t.Setenv can only set, and a developer with T212_API_KEY or
+// MOCK_URL exported (entirely normal — .env.dist exists so the service can be
+// run locally) would otherwise get a spurious failure in one direction and a
+// vacuous pass in the other. Every key here is restored by t.Setenv's cleanup.
+var allEnvKeys = []string{
+	"MODE", "MOCK_URL",
+	"T212_API_KEY", "T212_API_SECRET",
+	"TICKERS",
+	"POLL_INTERVAL", "POLL_MAX_RETRIES", "READY_FAILURE_THRESHOLD",
+	"MQTT_BROKER_URL", "MQTT_USERNAME", "MQTT_PASSWORD", "MQTT_CLIENT_ID",
+	"TOPIC_PREFIX", "DISCOVERY_PREFIX",
+	"HTTP_ADDR", "LOG_LEVEL", "LOG_FORMAT",
+}
+
 func setEnv(t *testing.T, kv map[string]string) {
 	t.Helper()
+	for _, k := range allEnvKeys {
+		t.Setenv(k, "")
+	}
 	for k, v := range kv {
 		t.Setenv(k, v)
 	}

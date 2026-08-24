@@ -32,7 +32,8 @@ Per-entity discovery topic:
 ```
 
 retained, QoS 1, published once at startup and again after every MQTT (re)connection
-(`REQ-HA-01`, `REQ-HA-13`).
+(`REQ-HA-01`, `REQ-HA-13`). See "Republishing on (re)connection" below for what the
+reconnect pass publishes, which is deliberately *not* the same thing startup does.
 
 ## Devices
 
@@ -163,6 +164,43 @@ device's currency and display name correct themselves in place without any topic
 change and without deleting or re-adding the device. Selling out of a holding and
 buying back into it later needs no discovery churn at all — only the availability
 payload flips between `online` and `offline` (`REQ-HA-08`, `REQ-HA-09`).
+
+## Republishing on (re)connection
+
+Every MQTT (re)connection triggers a **republish** pass (`REQ-HA-13`), which exists to
+heal a broker that came back without its retained set — the default for a plain
+`mosquitto` container with no `persistence true`. Without it, a broker restart leaves
+Home Assistant with no discovery configs and no availability for any device, and the
+in-process "unchanged, skip it" memos mean later polls do not put them back either.
+
+The republish pass **restores the current known state**; it does not rerun startup.
+Concretely it publishes, unconditionally (the memos are exactly what would defeat
+healing):
+
+1. The account device's discovery configs.
+2. For every tracked position, its discovery rebuilt from the **stored** instrument
+   name and instrument currency — so a position already refined by a poll comes back
+   refined, keeping its real device name and the instrument currency on `avg_price`
+   and `current_price`.
+3. For every tracked position, its **last-known** availability — `online` for a
+   position currently held, `offline` for one that has been sold out.
+4. Placeholder discovery plus a retained `offline` for statically whitelisted tickers
+   that no poll has ever seen, which is the startup behaviour that remains correct
+   (`REQ-HA-09`). This matters when the first connection-up beats the initial startup
+   publish.
+
+Rerunning the *startup* routine here would be wrong in two ways, both user-visible.
+With an explicit `TICKERS` list it overwrites every refined position with its
+placeholder — renaming the device and reverting `avg_price`/`current_price` from the
+instrument currency to the account currency, which Home Assistant's recorder treats
+as a long-term-statistics unit mismatch and stops recording — and marks a currently
+held position `offline`, contradicting `REQ-HA-05` and `REQ-HA-08`. With `TICKERS=*`
+the static list is empty, so nothing position-related is republished at all and the
+position devices never come back.
+
+The republish pass is serialised against the poll loop and against shutdown by the
+same lock as every other publish entry point, and is a no-op once the shutdown
+sequence has run (see `06-lifecycle-health.md`).
 
 ## Publisher abstraction
 

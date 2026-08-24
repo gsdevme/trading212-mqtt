@@ -51,10 +51,22 @@ credentials are still being validated — rather than the process being unprobea
 during init (`REQ-LC-03`). `/readyz` correctly reports not-ready during this window
 since no publish has succeeded yet.
 
-`401`/`403` returned by the startup credential-validation call are fatal: the process
-logs and exits non-zero rather than starting a scheduler that would only fail every
-poll. Bad credentials should crash-loop visibly under Kubernetes rather than run
-blind and silently unready forever (`REQ-LC-04`).
+A **failure of any kind** from the startup credential-validation call is fatal: the
+process logs and exits non-zero rather than starting a scheduler that has no account
+id or primary currency to publish under (`REQ-LC-04`). `401`/`403` is the case that
+motivates it — bad credentials should crash-loop visibly under Kubernetes rather than
+run blind and silently unready forever — but the same treatment is applied
+deliberately to a transient failure such as an API outage or a DNS hiccup. Fail-fast
+is the intent: a pod that starts and never becomes ready is a worse outcome than one
+Kubernetes restarts with backoff, because the former reports a healthy Deployment and
+the latter reports a visibly failing one.
+
+The one exception is the root context already being cancelled. A `SIGTERM` arriving
+mid-startup makes the in-flight call return `context.Canceled`; that is a normal
+termination, not a fault, so the process shuts the status listener down and exits `0`
+as `REQ-LC-05` requires. Nothing beyond discovery has been published at that point,
+and the MQTT connection (if one exists) is torn down without a clean disconnect, so
+the Last Will still marks the service offline.
 
 ## Graceful shutdown
 
@@ -62,7 +74,12 @@ On `SIGTERM` or `SIGINT`:
 
 1. Stop accepting new work; let any in-flight poll finish.
 2. Publish retained `offline` to every availability topic — the service topic and
-   every position topic.
+   every position topic. **Every position is attempted and the service topic is
+   written unconditionally**, even if one of the position publishes fails: step 3's
+   clean disconnect suppresses the Last Will, and the publisher is already latched
+   shut, so a service topic left retained-`online` here could never be corrected by
+   anything. Home Assistant would show a dead service as healthy indefinitely, which
+   is the worst kind of monitoring failure. Failures are aggregated and logged.
 3. Disconnect the MQTT client cleanly.
 4. Exit `0`.
 

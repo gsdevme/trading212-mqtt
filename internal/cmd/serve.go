@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -26,7 +27,50 @@ var serveCmd = &cobra.Command{
 	},
 }
 
+// mqttTransport is the slice of the MQTT client the composition root actually
+// uses: publishing, the (re)connection callback, and the clean disconnect.
+// Declaring it as an interface is the one seam runServe needs to be driveable
+// in-process against a fake broker — see serve_test.go. *mqtt.Client satisfies
+// it; nothing else does in production.
+type mqttTransport interface {
+	publisher.Publisher
+	SetOnConnectionUp(f func(ctx context.Context))
+	Disconnect(ctx context.Context) error
+}
+
+// serveDeps injects the external constructor runServe cannot otherwise be
+// tested through. Its zero value is the production wiring, so runServe's
+// behaviour is identical whether or not a test supplied anything.
+//
+// The Trading 212 API needs no entry here: MODE=mock + MOCK_URL already point
+// the client at an arbitrary base URL (see internal/config), and that is a
+// supported production path rather than a test-only back door.
+type serveDeps struct {
+	// connectMQTT builds the MQTT transport. Defaults to mqtt.Connect.
+	connectMQTT func(ctx context.Context, opts mqtt.Options) (mqttTransport, error)
+}
+
+// withDefaults fills in the production constructors for anything unset.
+func (d serveDeps) withDefaults() serveDeps {
+	if d.connectMQTT == nil {
+		d.connectMQTT = func(ctx context.Context, opts mqtt.Options) (mqttTransport, error) {
+			return mqtt.Connect(ctx, opts)
+		}
+	}
+	return d
+}
+
 func runServe(ctx context.Context) error {
+	return runServeWith(ctx, serveDeps{})
+}
+
+// runServeWith is the composition root. Everything it wires — startup
+// validation, the reconnect callback, the poll loop, the shutdown sequence —
+// lives here, which is why it takes its one external constructor as an
+// argument rather than calling it directly.
+func runServeWith(ctx context.Context, deps serveDeps) error {
+	deps = deps.withDefaults()
+
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
@@ -72,7 +116,7 @@ func runServe(ctx context.Context) error {
 	// credentials are fatal here rather than a silent, permanently-unready pod.
 	account, err := client.AccountSummary(ctx)
 	if err != nil {
-		return fmt.Errorf("validate credentials: %w", err)
+		return startupFailure(ctx, httpSrv, logger, fmt.Errorf("validate credentials: %w", err))
 	}
 	logger.Info("account resolved", "currency", account.Currency)
 	status.SetAccount(account.ID, account.Currency)
@@ -92,7 +136,7 @@ func runServe(ctx context.Context) error {
 	mqttCtx, closeMQTT := context.WithCancel(context.Background())
 	defer closeMQTT()
 
-	mc, err := mqtt.Connect(mqttCtx, mqtt.Options{
+	mc, err := deps.connectMQTT(mqttCtx, mqtt.Options{
 		BrokerURL:         cfg.MQTTBrokerURL,
 		Username:          cfg.MQTTUsername,
 		Password:          cfg.MQTTPassword,
@@ -106,16 +150,26 @@ func runServe(ctx context.Context) error {
 
 	pub := publisher.New(mc, haCfg, cfg.Whitelist)
 
-	// Republish availability and discovery on every (re)connection, healing a
-	// broker that lost its retained set. cbCtx is mqttCtx (or a context derived
-	// from it), which is no longer cancelled by SIGTERM, so this callback could
-	// otherwise fire mid-shutdown; the ctx.Err() check below is a cheap early-out
-	// to skip pointless work in that case, not what makes this safe. What makes
-	// it safe is that publisher.Service.PublishOffline is terminal: it latches
-	// closed under the same lock that serialises every publish, so a reconnect
-	// callback that loses the race to PublishOffline (however long it stalls)
-	// finds PublishAvailability/PublishDiscovery are no-ops once it does get in
-	// — see PublishOffline's doc comment.
+	// Restore everything the publisher knows on every (re)connection, healing a
+	// broker that lost its retained set (REQ-HA-13).
+	//
+	// This is pub.Republish, deliberately not pub.PublishDiscovery: the latter is
+	// a *startup* routine that publishes placeholder discovery and forces every
+	// statically whitelisted ticker offline, which on a reconnect would rename a
+	// refined position's device, revert its price entities from the instrument
+	// currency to the account currency, and grey out a position that is currently
+	// held — and which, under TICKERS=*, would republish nothing about positions
+	// at all. See Republish's doc comment.
+	//
+	// cbCtx is mqttCtx (or a context derived from it), which is no longer
+	// cancelled by SIGTERM, so this callback could otherwise fire mid-shutdown;
+	// the ctx.Err() check below is a cheap early-out to skip pointless work in
+	// that case, not what makes this safe. What makes it safe is that
+	// publisher.Service.PublishOffline is terminal: it latches closed under the
+	// same lock that serialises every publish, so a reconnect callback that loses
+	// the race to PublishOffline (however long it stalls) finds
+	// PublishAvailability/Republish are no-ops once it does get in — see
+	// PublishOffline's doc comment.
 	mc.SetOnConnectionUp(func(cbCtx context.Context) {
 		if ctx.Err() != nil {
 			return // shutting down; skip the pointless work
@@ -123,17 +177,17 @@ func runServe(ctx context.Context) error {
 		if err := pub.PublishAvailability(cbCtx, true); err != nil {
 			logger.Warn("republish availability failed", "err", err)
 		}
-		if err := pub.PublishDiscovery(cbCtx); err != nil {
+		if err := pub.Republish(cbCtx); err != nil {
 			logger.Warn("republish discovery failed", "err", err)
 		}
 	})
 	// Initial publish, in case the first connection-up fired before the callback
 	// was registered.
 	if err := pub.PublishDiscovery(ctx); err != nil {
-		return fmt.Errorf("publish discovery: %w", err)
+		return startupFailure(ctx, httpSrv, logger, fmt.Errorf("publish discovery: %w", err))
 	}
 	if err := pub.PublishAvailability(ctx, true); err != nil {
-		return fmt.Errorf("publish availability: %w", err)
+		return startupFailure(ctx, httpSrv, logger, fmt.Errorf("publish availability: %w", err))
 	}
 
 	sched := scheduler.New(client, statusRecordingPublisher{pub: pub, status: status}, status, scheduler.Config{
@@ -233,6 +287,30 @@ func metricsFromSnapshot(snap trading212.Snapshot) server.Metrics {
 		PositionCount: len(snap.Positions),
 		LastUpdated:   snap.Account.LastUpdated,
 	}
+}
+
+// startupFailure decides what a failure during startup means, for the sites
+// that run after the status listener is up but before the shutdown sequence
+// exists.
+//
+// A failure that is only the root context being cancelled is a SIGTERM landing
+// mid-startup: a normal termination, not a fault. Reporting it as an error
+// would exit 1 on an ordinary pod rescheduling, which REQ-LC-05 forbids.
+// Nothing beyond discovery has been published at these sites, and the MQTT
+// connection (if any) is torn down without a clean disconnect, so the Last Will
+// still marks the service offline.
+//
+// The listener is shut down either way: it was started before these sites and
+// nothing else will stop it.
+func startupFailure(ctx context.Context, httpSrv *http.Server, logger *slog.Logger, err error) error {
+	if shutErr := shutdownHTTP(httpSrv); shutErr != nil {
+		logger.Warn("http shutdown failed", "err", shutErr)
+	}
+	if ctx.Err() != nil {
+		logger.Info("shutting down during startup")
+		return nil
+	}
+	return err
 }
 
 func shutdownHTTP(srv *http.Server) error {
