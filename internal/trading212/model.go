@@ -8,6 +8,7 @@
 package trading212
 
 import (
+	"slices"
 	"strings"
 	"time"
 )
@@ -87,6 +88,23 @@ func (s Snapshot) Held(ticker string) (Position, bool) {
 		}
 	}
 	return Position{}, false
+}
+
+// Tickers returns every held position's ticker, in the casing the API returned,
+// sorted. Sorted because the result is meant to be read by eye and pasted
+// straight into TICKERS, and because it is logged every poll: a stable order
+// keeps the line byte-identical while the holdings are unchanged. An empty
+// portfolio returns nil.
+func (s Snapshot) Tickers() []string {
+	if len(s.Positions) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(s.Positions))
+	for _, p := range s.Positions {
+		out = append(out, p.Ticker)
+	}
+	slices.Sort(out)
+	return out
 }
 
 // ReturnPct computes a percentage return, returning nil when the cost basis is

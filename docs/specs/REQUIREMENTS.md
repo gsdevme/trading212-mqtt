@@ -107,6 +107,9 @@ Prefix meanings:
   known values. → `scheduler.go`
 - **REQ-SC-05** Poll outcomes are reported to the health reporter. → `scheduler.go`
 - **REQ-SC-06** Positions are filtered against the whitelist client-side. → `publisher/publisher.go`
+- **REQ-SC-07** The success line logs `held`: every held ticker, sorted and
+  comma-joined so the value pastes into `TICKERS` verbatim. → `scheduler.go`,
+  `trading212/model.go`
 
 ## Config (`internal/config`)
 
@@ -137,6 +140,9 @@ Prefix meanings:
   `cmd/root.go`, `cmd/serve.go`, `publisher/publisher.go`
 - **REQ-LC-06** The status page masks the account id to its last 4 digits. → `server/page.go`
 - **REQ-LC-07** Nothing is written to disk at runtime. → whole tree
+- **REQ-LC-08** The status page lists every held position with a tracked flag, plus
+  a paste-ready `TICKERS=` line. → `server/page.go`, `server/server.go`,
+  `cmd/serve.go`
 
 ## Testing (`internal/mock`, `features`)
 

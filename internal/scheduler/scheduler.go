@@ -6,6 +6,7 @@ package scheduler
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/gsdevme/trading212-mqtt/internal/trading212"
@@ -121,9 +122,14 @@ func (s *Scheduler) poll(ctx context.Context) {
 		s.health.MarkFailure()
 		return
 	}
+	// held carries the ticker IDs themselves, comma-joined so the value can be
+	// pasted verbatim into TICKERS — with the whitelist empty there is otherwise
+	// no way to learn the IDs the whitelist wants. See
+	// docs/specs/04-polling-scheduling.md.
 	s.logger.InfoContext(ctx, "published snapshot",
 		"total_value", snap.Account.TotalValue,
-		"positions", len(snap.Positions))
+		"positions", len(snap.Positions),
+		"held", strings.Join(snap.Tickers(), ","))
 	s.health.MarkSuccess()
 }
 

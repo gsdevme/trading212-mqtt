@@ -83,7 +83,10 @@ mosquitto_sub -t 'homeassistant/#' -t 'trading212/#' -v -W 3
 ```
 
 Set `TICKERS=AAPL_US_EQ,VUSA_EQ` (or any tickers the mock's canned data holds)
-before `make run` to also see position devices appear.
+before `make run` to also see position devices appear. The `held=` attribute on
+each `published snapshot` log line, and the holdings table on
+<http://localhost:8080>, list exactly what the account holds — see
+[Finding your tickers](#finding-your-tickers).
 
 ## Configuration
 
@@ -133,6 +136,25 @@ full:
 
 With an explicit list, the set of devices is fixed for the process lifetime;
 with `*`, it grows as holdings appear.
+
+#### Finding your tickers
+
+`TICKERS` takes Trading 212's own ticker IDs (`AAPL_US_EQ`, `VUSA_EQ`), which are
+not the symbols shown in the app. You do not need to look them up — start with
+`TICKERS=` empty and let the service tell you:
+
+- Every poll logs them, comma-joined and ready to paste:
+
+  ```
+  INFO published snapshot total_value=15234.56 positions=3 held=AAPL_US_EQ,FREE_EQ,VUSA_EQ
+  ```
+
+- The status page on `/` lists the same holdings in a table — ticker, name, value,
+  and whether each one is currently tracked — followed by the `TICKERS=` line to
+  copy.
+
+Paste the list (or the subset you want) into `.env` or your Deployment env and
+restart; those positions become Home Assistant devices.
 
 ## Running in Kubernetes
 

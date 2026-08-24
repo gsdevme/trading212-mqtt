@@ -37,9 +37,27 @@ The status page is a small HTML page showing:
 - Last poll time.
 - Last error, if any.
 - Current entity counts (account entities, position devices).
+- A **holdings table** (`REQ-LC-08`): one row per currently-held position, giving
+  its ticker, instrument name, value in the account currency, and whether it is
+  tracked — i.e. whether it matched `TICKERS` and so has a Home Assistant device.
+  Rows are ticker-sorted, matching the scheduler's `held=` log line
+  (`04-polling-scheduling.md`, `REQ-SC-07`). The table is omitted entirely when
+  nothing is held.
+- Below it, the same tickers as a **paste-ready `TICKERS=…` line**. This is the
+  point of the table: copy it into `.env` or the Deployment env, restart, and the
+  positions become devices. Without it, configuring `TICKERS` is a chicken-and-egg
+  problem, since the IDs are Trading 212's own and appear nowhere else.
+
+The per-row `Tracked` flag uses the same `Whitelist.Includes` predicate the
+publisher filters on, so the page cannot claim a device that was never published.
+It is not the same figure as the tracked **count** in the row above: that counts
+devices, which includes whitelisted tickers that are not currently held, while the
+per-row flag is held ∩ whitelist. The two legitimately differ.
 
 Deliberately **omitted**: the API key, the API secret, the MQTT password, the full
-account id, and any raw API response body. The status page is a debugging aid, not a
+account id, and any raw API response body. The holdings table adds tickers, names
+and per-position values — the same class of information as the account totals
+already on the page — and nothing that identifies the account. The status page is a debugging aid, not a
 diagnostic dump — `dump` (see `01-trading212-api.md`) exists for that, and even it
 only ever writes to stdout, never to a page anyone could stumble across.
 

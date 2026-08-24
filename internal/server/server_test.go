@@ -172,3 +172,72 @@ func TestSetMetricsDoesNotAliasReturnPct(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+// The holdings table is the answer to "which ticker IDs does TICKERS want?", so
+// it must show every held position — tracked or not — and offer the list in a
+// form that pastes straight into TICKERS.
+func TestStatusPageShowsHoldings(t *testing.T) {
+	s := newTestServer()
+	s.SetAccount(12345678, "GBP")
+	s.SetMetrics(Metrics{
+		Currency: "GBP", PositionCount: 2, TrackedCount: 1, LastUpdated: time.Now(),
+		Positions: []Position{
+			{Ticker: "AAPL_US_EQ", Name: "Apple Inc", Value: 1234.5, Tracked: true},
+			{Ticker: "FREE_EQ", Name: "Freetrade", Value: 67.89, Tracked: false},
+		},
+	})
+
+	body := get(t, s, "/").Body.String()
+	for _, want := range []string{
+		"<td>AAPL_US_EQ</td><td>Apple Inc</td><td class=\"num\">1234.50 GBP</td><td>yes</td>",
+		"<td>FREE_EQ</td><td>Freetrade</td><td class=\"num\">67.89 GBP</td><td>no</td>",
+		"<code>TICKERS=AAPL_US_EQ,FREE_EQ</code>",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("status page missing %q", want)
+		}
+	}
+}
+
+func TestStatusPageOmitsHoldingsTableWhenEmpty(t *testing.T) {
+	s := newTestServer()
+	s.SetMetrics(Metrics{Currency: "GBP"})
+
+	if body := get(t, s, "/").Body.String(); strings.Contains(body, "TICKERS=") {
+		t.Error("the TICKERS line must not render for an account with no holdings")
+	}
+}
+
+// TestSetMetricsDoesNotAliasPositions is TestSetMetricsDoesNotAliasReturnPct for
+// the slice: handleRoot ranges over Metrics.Positions after releasing the lock,
+// so a caller that reuses one backing array across polls would otherwise race.
+func TestSetMetricsDoesNotAliasPositions(t *testing.T) {
+	s := newTestServer()
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				get(t, s, "/")
+			}
+		}
+	}()
+
+	// The caller reuses ONE backing array across calls.
+	positions := []Position{{Ticker: "AAPL_US_EQ", Name: "Apple Inc"}}
+	for i := 0; i < 2000; i++ {
+		s.SetMetrics(Metrics{Currency: "GBP", Positions: positions})
+		positions[0].Ticker = "VUSA_EQ"
+		positions[0].Tracked = i%2 == 0
+	}
+
+	close(stop)
+	wg.Wait()
+}

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -226,7 +228,7 @@ func runServeWith(ctx context.Context, deps serveDeps) error {
 		return startupFailure(ctx, httpSrv, logger, fmt.Errorf("publish availability: %w", err))
 	}
 
-	sched := scheduler.New(client, statusRecordingPublisher{pub: pub, status: status}, status, scheduler.Config{
+	sched := scheduler.New(client, statusRecordingPublisher{pub: pub, status: status, wl: cfg.Whitelist}, status, scheduler.Config{
 		AccountCurrency: account.Currency,
 		PollInterval:    cfg.PollInterval,
 		MaxRetries:      cfg.PollMaxRetries,
@@ -296,23 +298,44 @@ func runServeWith(ctx context.Context, deps serveDeps) error {
 type statusRecordingPublisher struct {
 	pub    *publisher.Service
 	status *server.Server
+	// wl is the same whitelist the publisher filters on, so the page's
+	// per-position "tracked" flag cannot disagree with what was published.
+	wl trading212.Whitelist
 }
 
 func (r statusRecordingPublisher) PublishSnapshot(ctx context.Context, snap trading212.Snapshot) error {
 	if err := r.pub.PublishSnapshot(ctx, snap); err != nil {
 		return err
 	}
-	m := metricsFromSnapshot(snap)
+	m := metricsFromSnapshot(snap, r.wl)
 	m.TrackedCount = r.pub.TrackedCount()
 	r.status.SetMetrics(m)
 	return nil
 }
 
-// metricsFromSnapshot maps a snapshot into the status page's view model.
-// TrackedCount is filled in separately by the caller, from the publisher, since
-// the snapshot alone (unfiltered by the whitelist) cannot tell which positions
-// actually have a Home Assistant device.
-func metricsFromSnapshot(snap trading212.Snapshot) server.Metrics {
+// metricsFromSnapshot maps a snapshot into the status page's view model, marking
+// each holding tracked with the same predicate publisher.PublishSnapshot filters
+// on.
+//
+// TrackedCount is still filled in separately by the caller, from the publisher:
+// it counts devices, which includes whitelisted tickers that are not currently
+// held, while the per-row Tracked flag is held ∩ whitelist. The two legitimately
+// differ and are not meant to be reconciled.
+func metricsFromSnapshot(snap trading212.Snapshot, wl trading212.Whitelist) server.Metrics {
+	// Rows are ordered by ticker, matching the scheduler's held= log line so the
+	// two read the same way.
+	var positions []server.Position
+	for _, p := range snap.Positions {
+		positions = append(positions, server.Position{
+			Ticker:  p.Ticker,
+			Name:    p.Name,
+			Value:   p.Value,
+			Tracked: wl.Includes(p.Ticker),
+		})
+	}
+	slices.SortFunc(positions, func(a, b server.Position) int {
+		return strings.Compare(a.Ticker, b.Ticker)
+	})
 	return server.Metrics{
 		Currency:      snap.Account.Currency,
 		TotalValue:    snap.Account.TotalValue,
@@ -321,6 +344,7 @@ func metricsFromSnapshot(snap trading212.Snapshot) server.Metrics {
 		UnrealizedPL:  snap.Account.UnrealizedPL,
 		ReturnPct:     snap.Account.ReturnPct,
 		PositionCount: len(snap.Positions),
+		Positions:     positions,
 		LastUpdated:   snap.Account.LastUpdated,
 	}
 }

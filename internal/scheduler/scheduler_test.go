@@ -1,9 +1,12 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,6 +25,8 @@ type fakeFetcher struct {
 	// emptyCurrency makes AccountSummary return "" for Currency, exercising fetch's
 	// fallback to Config.AccountCurrency.
 	emptyCurrency bool
+	// positions overrides the default single-holding response. Nil keeps it.
+	positions []trading212.Position
 }
 
 func (f *fakeFetcher) AccountSummary(context.Context) (trading212.AccountSummary, error) {
@@ -44,6 +49,9 @@ func (f *fakeFetcher) Positions(_ context.Context, accountCurrency string) ([]tr
 	f.gotCurrency = accountCurrency
 	if f.positionsErr != nil {
 		return nil, f.positionsErr
+	}
+	if f.positions != nil {
+		return f.positions, nil
 	}
 	return []trading212.Position{{Ticker: "AAPL_US_EQ"}}, nil
 }
@@ -310,5 +318,50 @@ func TestNewClampsNonPositivePollInterval(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("Run did not return after cancellation")
 		}
+	}
+}
+
+// newLoggingScheduler is newTestScheduler with the success line captured, so
+// tests can assert on what an operator actually sees in kubectl logs.
+func newLoggingScheduler(f Fetcher, p SnapshotPublisher, h HealthReporter, buf *bytes.Buffer) *Scheduler {
+	return New(f, p, h, Config{
+		AccountCurrency: "GBP",
+		PollInterval:    time.Minute,
+		MaxRetries:      0,
+		Logger:          slog.New(slog.NewTextHandler(buf, nil)),
+		After: func(time.Duration) <-chan time.Time {
+			ch := make(chan time.Time, 1)
+			ch <- time.Now()
+			return ch
+		},
+	})
+}
+
+// The held= attribute is the only place a default (empty TICKERS) deployment
+// learns the ticker IDs the whitelist wants, and it is comma-joined so the value
+// can be pasted into TICKERS verbatim.
+func TestPollLogsHeldTickers(t *testing.T) {
+	f := &fakeFetcher{positions: []trading212.Position{
+		{Ticker: "VUSA_EQ"}, {Ticker: "AAPL_US_EQ"},
+	}}
+	var buf bytes.Buffer
+	newLoggingScheduler(f, &fakePublisher{}, &fakeHealth{}, &buf).PollNow(context.Background())
+
+	line := buf.String()
+	if !strings.Contains(line, "published snapshot") {
+		t.Fatalf("no success line logged: %q", line)
+	}
+	if !strings.Contains(line, "held=AAPL_US_EQ,VUSA_EQ") {
+		t.Errorf("expected sorted, comma-joined tickers in held=; got %q", line)
+	}
+}
+
+func TestPollLogsEmptyHeldForEmptyPortfolio(t *testing.T) {
+	f := &fakeFetcher{positions: []trading212.Position{}}
+	var buf bytes.Buffer
+	newLoggingScheduler(f, &fakePublisher{}, &fakeHealth{}, &buf).PollNow(context.Background())
+
+	if line := buf.String(); !strings.Contains(line, "held=") {
+		t.Errorf("held= must still be logged for an empty portfolio; got %q", line)
 	}
 }

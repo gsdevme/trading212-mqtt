@@ -7,6 +7,7 @@ package server
 
 import (
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 )
@@ -17,6 +18,16 @@ type Config struct {
 	ReadyFailureThreshold int
 	PollInterval          time.Duration
 	Mode                  string
+}
+
+// Position is one row of the status page's holdings table. It is a view model,
+// not the domain type: this package imports nothing from the other packages, so
+// serve.go maps the values in.
+type Position struct {
+	Ticker  string
+	Name    string
+	Value   float64
+	Tracked bool // has a Home Assistant device, i.e. matched TICKERS
 }
 
 // Metrics is a snapshot of the latest figures shown on the / page. The zero
@@ -37,6 +48,10 @@ type Metrics struct {
 	// have a Home Assistant device.
 	PositionCount int
 	TrackedCount  int
+
+	// Positions is one row per held position, in the order the page renders
+	// them.
+	Positions []Position
 
 	LastUpdated time.Time
 }
@@ -116,6 +131,9 @@ func (s *Server) SetMetrics(m Metrics) {
 		v := *m.ReturnPct
 		m.ReturnPct = &v
 	}
+	// Same reasoning for the slice: the caller keeps ownership of its backing
+	// array, and handleRoot ranges over this one after releasing the lock.
+	m.Positions = slices.Clone(m.Positions)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
