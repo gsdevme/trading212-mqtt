@@ -356,6 +356,55 @@ func TestServeShutdownPublishesOfflineBeforeDisconnectAndTeardown(t *testing.T) 
 	}
 }
 
+func TestServeStartupCancellationInterruptsMQTTConnect(t *testing.T) {
+	api := httptest.NewServer(mock.New(mock.Defaults()).Handler())
+	t.Cleanup(api.Close)
+
+	for key, value := range map[string]string{
+		"MODE":                    "mock",
+		"MOCK_URL":                api.URL,
+		"MQTT_BROKER_URL":         "mqtt://fake-broker:1883",
+		"POLL_INTERVAL":           "1m",
+		"POLL_MAX_RETRIES":        "0",
+		"READY_FAILURE_THRESHOLD": "3",
+		"HTTP_ADDR":               "127.0.0.1:0",
+		"LOG_LEVEL":               "error",
+		"LOG_FORMAT":              "text",
+	} {
+		t.Setenv(key, value)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	connected := make(chan struct{})
+	returned := make(chan error, 1)
+	go func() {
+		returned <- runServeWith(ctx, serveDeps{
+			connectMQTT: func(connectCtx context.Context, _ mqtt.Options) (mqttTransport, error) {
+				close(connected)
+				<-connectCtx.Done()
+				return nil, connectCtx.Err()
+			},
+		})
+	}()
+
+	select {
+	case <-connected:
+		cancel()
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for MQTT connection attempt")
+	}
+
+	select {
+	case err := <-returned:
+		if err != nil {
+			t.Fatalf("runServeWith after startup cancellation = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runServeWith did not return after startup cancellation")
+	}
+}
+
 // REQ-HA-13 arm A. A broker reconnect must restore the state the service
 // already knows, not rerun startup: a held position stays online, and its
 // price entities keep the *instrument* currency and the real device name. On

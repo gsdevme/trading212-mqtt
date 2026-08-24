@@ -136,16 +136,52 @@ func runServeWith(ctx context.Context, deps serveDeps) error {
 	mqttCtx, closeMQTT := context.WithCancel(context.Background())
 	defer closeMQTT()
 
-	mc, err := deps.connectMQTT(mqttCtx, mqtt.Options{
-		BrokerURL:         cfg.MQTTBrokerURL,
-		Username:          cfg.MQTTUsername,
-		Password:          cfg.MQTTPassword,
-		ClientID:          cfg.MQTTClientID,
-		AvailabilityTopic: haCfg.AvailabilityTopic(),
-		Logger:            logger,
-	})
+	// Because mqttCtx ignores signals, connecting on this goroutine would make
+	// startup deaf to SIGTERM: connectMQTT blocks until the broker answers, so an
+	// unreachable one hung the process until SIGKILL. Connect off to the side and
+	// select on the signal context instead. The channel is buffered so the
+	// goroutine can always finish its send.
+	type connectOutcome struct {
+		client mqttTransport
+		err    error
+	}
+	connectResult := make(chan connectOutcome, 1)
+	go func() {
+		client, err := deps.connectMQTT(mqttCtx, mqtt.Options{
+			BrokerURL:         cfg.MQTTBrokerURL,
+			Username:          cfg.MQTTUsername,
+			Password:          cfg.MQTTPassword,
+			ClientID:          cfg.MQTTClientID,
+			AvailabilityTopic: haCfg.AvailabilityTopic(),
+			Logger:            logger,
+		})
+		connectResult <- connectOutcome{client: client, err: err}
+	}()
+
+	var mc mqttTransport
+	select {
+	case result := <-connectResult:
+		mc, err = result.client, result.err
+	case <-ctx.Done():
+		// closeMQTT unblocks a connect that honours cancellation; the timeout
+		// bounds this against one that does not. Nothing is published here — the
+		// service never came up — so waiting longer buys nothing, and a goroutine
+		// still parked in connectMQTT at process exit is harmless where a
+		// shutdown that never returns is not.
+		closeMQTT()
+		select {
+		case result := <-connectResult:
+			if result.client != nil {
+				shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 3*time.Second)
+				_ = result.client.Disconnect(shutdownCtx)
+				cancelShutdown()
+			}
+		case <-time.After(3 * time.Second):
+		}
+		return startupFailure(ctx, httpSrv, logger, fmt.Errorf("mqtt: %w", ctx.Err()))
+	}
 	if err != nil {
-		return fmt.Errorf("mqtt: %w", err)
+		return startupFailure(ctx, httpSrv, logger, fmt.Errorf("mqtt: %w", err))
 	}
 
 	pub := publisher.New(mc, haCfg, cfg.Whitelist)
