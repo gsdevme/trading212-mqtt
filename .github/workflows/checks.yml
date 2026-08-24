@@ -1,0 +1,48 @@
+name: checks
+
+# Reusable verification gate, called by both the PR pipeline and the release
+# pipeline so the exact gate that guards pull requests must also be green before
+# a release is cut. Uses the Makefile targets as the single source of truth, so
+# CI and local runs use the same pinned tool versions.
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make lint
+
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make test
+
+  e2e:
+    runs-on: ubuntu-latest
+    # make test-e2e drives the real API client against the mock, whose rate
+    # limiter enforces 5s between account-summary calls — a single run takes
+    # 70-100s by design. This ceiling is generous headroom, not a target.
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make test-e2e

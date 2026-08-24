@@ -11,9 +11,9 @@ GOLANGCI_LINT := $(BIN_DIR)/golangci-lint
 build:
 	go build -o $(BIN_DIR)/$(BINARY) $(PKG)
 
-## test: run unit + integration tests (excludes the godog features suite)
+## test: run unit + integration tests with the race detector (excludes the godog features suite)
 test:
-	go test $(shell go list ./... | grep -v /features)
+	go test -race $(shell go list ./... | grep -v /features)
 
 ## test-e2e: run the godog acceptance suite
 test-e2e:
