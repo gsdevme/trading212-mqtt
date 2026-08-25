@@ -25,7 +25,7 @@ One **account device** (`Trading 212 (<account_id>)`), carrying:
 | `invested` | Total cost basis of all holdings |
 | `current_value` | Current market value of all holdings |
 | `unrealized_pl` | Unrealized profit/loss across all holdings |
-| `return_pct` | Derived return percentage |
+| `return_pct` | Derived return percentage (unrounded; shown to 2dp in Home Assistant) |
 | `realized_pl` *(diagnostic)* | Realized profit/loss |
 | `cash_in_pies` *(diagnostic)* | Cash allocated to Pies |
 | `cash_reserved` *(diagnostic)* | Cash reserved by open orders |
@@ -42,7 +42,7 @@ name>`), carrying:
 | `current_price` | Current market price per share |
 | `value` | Current value of the position |
 | `unrealized_pl` | Unrealized profit/loss on the position |
-| `return_pct` | Derived return percentage |
+| `return_pct` | Derived return percentage (unrounded; shown to 2dp in Home Assistant) |
 | `cost` *(diagnostic)* | Cost basis of the position |
 | `fx_impact` *(diagnostic)* | Portion of the P/L attributable to FX movement |
 | `quantity_in_pies` *(diagnostic)* | Shares held inside a Pie |

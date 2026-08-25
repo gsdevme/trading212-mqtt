@@ -97,6 +97,11 @@ shutdown.
   currency the value is actually denominated in.
 - `entity_category: diagnostic` — hides an entity from the main device view.
   Use it for things that matter when debugging but clutter a dashboard.
+- `suggested_display_precision` — integer number of decimal places HA uses when
+  **rendering** the entity. The state it stores keeps full precision, so
+  templates and automations are unaffected. It is a default the user can
+  override per entity in the UI. Omit the key entirely when there is no
+  preference; `0` means "no decimals", not "unset".
 - `unique_id` — required for HA to allow renaming/customising an entity. Must be
   stable across restarts.
 

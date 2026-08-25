@@ -237,3 +237,45 @@ func TestTimestampEntitiesHaveNoUnit(t *testing.T) {
 		t.Error("a timestamp entity must not carry a state_class")
 	}
 }
+
+// TestReturnPctDisplayPrecision pins the display-only rounding: the discovery
+// config asks Home Assistant for two decimals, while the state payload keeps the
+// unrounded value so templates and automations still see full precision.
+func TestReturnPctDisplayPrecision(t *testing.T) {
+	account, err := BuildAccountDiscovery(testConfig())
+	if err != nil {
+		t.Fatalf("BuildAccountDiscovery: %v", err)
+	}
+	position, err := BuildPositionDiscovery(testConfig(), "AAPL_US_EQ", "Apple Inc.", "USD")
+	if err != nil {
+		t.Fatalf("BuildPositionDiscovery: %v", err)
+	}
+
+	cases := []struct{ name, topic string }{
+		{"account", "homeassistant/sensor/t212_12345678/return_pct/config"},
+		{"position", "homeassistant/sensor/t212_12345678_aapl_us_eq/return_pct/config"},
+	}
+	byTopic := decodePayloads(t, append(account, position...))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := byTopic[tc.topic]
+			if p == nil {
+				t.Fatalf("missing discovery config %s", tc.topic)
+			}
+			// Numbers decode as float64.
+			if got := p["suggested_display_precision"]; got != float64(2) {
+				t.Errorf("suggested_display_precision = %v, want 2", got)
+			}
+		})
+	}
+
+	// Entities without a precision hint must omit the key entirely rather than
+	// pin Home Assistant to a default.
+	plain := byTopic["homeassistant/sensor/t212_12345678/total_value/config"]
+	if plain == nil {
+		t.Fatal("missing total_value discovery config")
+	}
+	if _, has := plain["suggested_display_precision"]; has {
+		t.Error("total_value must not carry a suggested_display_precision")
+	}
+}

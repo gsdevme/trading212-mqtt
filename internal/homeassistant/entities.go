@@ -20,7 +20,16 @@ type Entity struct {
 	StateClass  string
 	Unit        string
 	Category    string // "diagnostic" or empty
+
+	// Precision is the suggested_display_precision Home Assistant uses when
+	// rendering the entity, or nil to let HA choose. A pointer because zero
+	// decimals is a legitimate value, not "unset".
+	Precision *int
 }
+
+// precision is a helper for the Entity.Precision literal, which needs an
+// addressable int.
+func precision(n int) *int { return &n }
 
 // AccountEntities returns the catalogue published for the account device. Every
 // monetary entity is denominated in currency, the account's primary currency.
@@ -34,7 +43,7 @@ func AccountEntities(currency string) []Entity {
 		{Component: Sensor, Key: "invested", Name: "Invested", DeviceClass: "monetary", StateClass: "total", Unit: currency},
 		{Component: Sensor, Key: "current_value", Name: "Investments value", DeviceClass: "monetary", StateClass: "total", Unit: currency},
 		{Component: Sensor, Key: "unrealized_pl", Name: "Unrealised P/L", DeviceClass: "monetary", StateClass: "total", Unit: currency},
-		{Component: Sensor, Key: "return_pct", Name: "Return", StateClass: "measurement", Unit: "%"},
+		{Component: Sensor, Key: "return_pct", Name: "Return", StateClass: "measurement", Unit: "%", Precision: precision(2)},
 
 		// Diagnostics: useful when reconciling, noise on a dashboard.
 		{Component: Sensor, Key: "realized_pl", Name: "Realised P/L", DeviceClass: "monetary", StateClass: "total", Unit: currency, Category: "diagnostic"},
@@ -59,7 +68,7 @@ func PositionEntities(accountCurrency, instrumentCurrency string) []Entity {
 		{Component: Sensor, Key: "current_price", Name: "Current price", DeviceClass: "monetary", StateClass: "measurement", Unit: instrumentCurrency},
 		{Component: Sensor, Key: "value", Name: "Value", DeviceClass: "monetary", StateClass: "total", Unit: accountCurrency},
 		{Component: Sensor, Key: "unrealized_pl", Name: "Unrealised P/L", DeviceClass: "monetary", StateClass: "total", Unit: accountCurrency},
-		{Component: Sensor, Key: "return_pct", Name: "Return", StateClass: "measurement", Unit: "%"},
+		{Component: Sensor, Key: "return_pct", Name: "Return", StateClass: "measurement", Unit: "%", Precision: precision(2)},
 
 		// Diagnostics.
 		{Component: Sensor, Key: "cost", Name: "Cost basis", DeviceClass: "monetary", StateClass: "total", Unit: accountCurrency, Category: "diagnostic"},

@@ -104,6 +104,19 @@ every other monetary entity in this table uses the account currency (`REQ-HA-05`
 Position `return_pct` is `walletImpact.unrealizedProfitLoss / walletImpact.totalCost ×
 100`, `nil` when `totalCost` is zero.
 
+## Display precision
+
+`return_pct` on both the account and position catalogues carries
+`suggested_display_precision: 2` (`REQ-HA-14`). This is display-only: the derived
+value published to the state topic is **not** rounded, so template sensors and
+automations reading `value_json.return_pct` still see full precision. It is also
+only a default — a user may override the displayed precision per entity in the
+Home Assistant UI.
+
+No other entity sets it. Monetary entities take their default from
+`device_class: monetary`, and the key is omitted entirely rather than emitted as
+a zero, because zero decimals is a legitimate value.
+
 ## Diagnostic entities
 
 `entity_category: diagnostic` is set on: realized P/L, both non-tradeable cash figures
