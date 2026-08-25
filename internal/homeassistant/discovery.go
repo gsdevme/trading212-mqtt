@@ -158,5 +158,8 @@ func entityPayload(e Entity, baseTopic, deviceID string, device map[string]any, 
 	if e.Category != "" {
 		p["entity_category"] = e.Category
 	}
+	if e.Precision != nil {
+		p["suggested_display_precision"] = *e.Precision
+	}
 	return p
 }

@@ -96,6 +96,10 @@ Prefix meanings:
   seen still get placeholder discovery and `offline`. This is a distinct entry point
   from the startup routine (`Service.Republish`, not `PublishDiscovery`). →
   `publisher/publisher.go`, `mqtt/client.go`, `cmd/serve.go`
+- **REQ-HA-14** Account and position `return_pct` discovery carries
+  `suggested_display_precision: 2`. The rounding is display-only — the value
+  published to the state topic stays unrounded. No other entity sets the key. →
+  `homeassistant/entities.go`, `homeassistant/discovery.go`
 
 ## Scheduling (`internal/scheduler`)
 
